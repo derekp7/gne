@@ -42,6 +42,7 @@ FILE *open_file(char *filename);
 char *sanitize_filename(char *inname);
 void *usage();
 int mkdir_p(char *pathname, int mode);
+void print_longtoc_entry(struct filespec *fs, size_t realsize);
 struct dirperms {
     struct dirperms *prev;
     char *filename;
@@ -138,6 +139,7 @@ int getargs(int argc, char **argv)
 	{ "extract", no_argument, NULL, 'x' },
 	{ "list", no_argument, NULL, 't' },
 	{ "diff", no_argument, NULL, 'd' },
+	{ "compare", no_argument, NULL, 'd' },
 	{ "verbose", no_argument, NULL, 'v' },
 	{ "file", required_argument, NULL, 'f' },
 	{ "passphrase", required_argument, NULL, 'D' },
@@ -644,6 +646,8 @@ int extracttar(int argc, char **argv)
     while (tar_get_next_hdr(&fs)) {
 	int encoded_tar = 0;
 	int extract_this_file = 0;
+	int has_segmented_header = 1;
+
 	if (fs.ftype != 'g') {
 	    sanitized_filename = sanitize_filename(fs.filename);
 	    sanitized_linktarget = sanitize_filename(fs.linktarget);
@@ -655,125 +659,114 @@ int extracttar(int argc, char **argv)
 		if (strcmp(fs.filename, argv[i]) == 0 || (strncmp(argv[i], fs.filename, strlen(argv[i])) == 0 && fs.filename[strlen(argv[i])] == '/'))
 		    extract_this_file = 1;
 	    }
-	    if (args.verbose == 1) {
-		char modstr[11] = "drwxrwxrwx";
-		struct tm *filetime;
-		char filetimebuf[64];
-		if (fs.ftype != 'd')
-		    modstr[0] = '-';
-		for (int i = 0; i < 9; i++)
-		    if (((fs.mode >> i) & 1) == 0)
-			modstr[9 - i] = '-';
-		filetime = localtime(&fs.modtime);
-		strftime(filetimebuf, 64, "%Y-%m-%d %H:%M", filetime);
-		if (extract_this_file == 1)
-		    fprintf(stderr, "%s %s/%s %5llu %s %s\n", modstr, fs.auid, fs.agid, fs.filesize, filetimebuf, sanitized_filename);
-	    }
 	}
-	if (fs.ftype == 'g') {
-	    if (args.action == EXTRACT && getpaxvar(fs.xheader, fs.xheaderlen, "TC.numkeys", &paxdata, &paxdatalen) == 0) {
-		strncpy(numkeys_a, paxdata, paxdatalen <=15 ? paxdatalen : 15);
-		numkeys_a[paxdatalen < 15 ? paxdatalen : 15] = '\0';
-		numkeys = atoi(numkeys_a);
-		if (rsa_keys != NULL) {
-		    for (int i = 0; i < rsa_keys->numkeys; i++) {
-			dfree(rsa_keys->keys[i].comment);
-			dfree(rsa_keys->keys[i].fingerprint);
-			dfree(rsa_keys->keys[i].hmac_hash_b64);
-			dfree(rsa_keys->keys[i].eprvkey);
-			dfree(rsa_keys->keys[i].pubkey);
-			EVP_PKEY_free(rsa_keys->keys[i].evp_keypair);
-		    }
-		    free(rsa_keys->keys);
-		    free(rsa_keys);
-		}
-		rsa_keys = malloc(sizeof(struct rsa_keys));
-		rsa_keys->numkeys = numkeys;
-		rsa_keys->keys = malloc(sizeof(struct key_st) * numkeys);
 
-		for (keynum = 0; keynum < numkeys; keynum++) {
+	if (fs.ftype == 'g') {
+	    if (args.action != LIST) {
+		if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.numkeys", &paxdata, &paxdatalen) == 0) {
+		    strncpy(numkeys_a, paxdata, paxdatalen <=15 ? paxdatalen : 15);
+		    numkeys_a[paxdatalen < 15 ? paxdatalen : 15] = '\0';
+		    numkeys = atoi(numkeys_a);
+		    if (rsa_keys != NULL) {
+			for (int i = 0; i < rsa_keys->numkeys; i++) {
+			    dfree(rsa_keys->keys[i].comment);
+			    dfree(rsa_keys->keys[i].fingerprint);
+			    dfree(rsa_keys->keys[i].hmac_hash_b64);
+			    dfree(rsa_keys->keys[i].eprvkey);
+			    dfree(rsa_keys->keys[i].pubkey);
+			    EVP_PKEY_free(rsa_keys->keys[i].evp_keypair);
+			}
+			free(rsa_keys->keys);
+			free(rsa_keys);
+		    }
+		    rsa_keys = malloc(sizeof(struct rsa_keys));
+		    rsa_keys->numkeys = numkeys;
+		    rsa_keys->keys = malloc(sizeof(struct key_st) * numkeys);
+
+		    for (keynum = 0; keynum < numkeys; keynum++) {
+			rsa_keys->keys[keynum].fingerprint = NULL;
+			rsa_keys->keys[keynum].comment = NULL;
+			rsa_keys->keys[keynum].eprvkey = NULL;
+			rsa_keys->keys[keynum].pubkey = NULL;
+			rsa_keys->keys[keynum].hmac_hash_b64 = NULL;
+			rsa_keys->keys[keynum].evp_keypair = NULL;
+
+			sprintf(paxhdr_varstring, "TC.pubkey.fingerprint.%d", keynum);
+			if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
+			    strncpya0(&(rsa_keys->keys[keynum].fingerprint), paxdata, paxdatalen);
+			sprintf(paxhdr_varstring, "TC.eprivkey.%d", keynum);
+			if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
+			    strncpya0(&(rsa_keys->keys[keynum].eprvkey), paxdata, paxdatalen);
+			sprintf(paxhdr_varstring, "TC.pubkey.%d", keynum);
+			if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
+			    strncpya0(&(rsa_keys->keys[keynum].pubkey), paxdata, paxdatalen);
+			sprintf(paxhdr_varstring, "TC.hmackeyhash.%d", keynum);
+			if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0) {
+			    strncpya0(&(rsa_keys->keys[keynum].hmac_hash_b64), paxdata, paxdatalen);
+			}
+			sprintf(paxhdr_varstring, "TC.keyfile.comment.%d", keynum);
+			if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
+			    strncpya0(&(rsa_keys->keys[keynum].comment), paxdata, paxdatalen);
+		    }
+		    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.keygroups", &paxdata, &paxdatalen) == 0) {
+			strncpya0(&required_keys_str, paxdata, paxdatalen);
+			parse(required_keys_str, &required_keys_list, ',');
+			for (int i = 0; required_keys_list[i] != NULL; i++) {
+			    parse(required_keys_list[i], &required_keys_group, '|');
+			    decode_privkey(rsa_keys, required_keys_group);
+			}
+		    }
+		}
+		else if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.eprivkey", &paxdata, &paxdatalen) == 0) {
+		    if (rsa_keys != NULL) {
+			for (int i = 0; i < rsa_keys->numkeys; i++) {
+			    dfree(rsa_keys->keys[i].comment);
+			    dfree(rsa_keys->keys[i].fingerprint);
+			    dfree(rsa_keys->keys[i].hmac_hash_b64);
+			    dfree(rsa_keys->keys[i].eprvkey);
+			    dfree(rsa_keys->keys[i].pubkey);
+			    EVP_PKEY_free(rsa_keys->keys[i].evp_keypair);
+			}
+			free(rsa_keys->keys);
+			free(rsa_keys);
+		    }
+		    keynum = 0;
+		    numkeys = 1;
+		    rsa_keys = malloc(sizeof(struct rsa_keys));
+		    rsa_keys->numkeys = 1;
+		    rsa_keys->keys = malloc(sizeof(struct key_st));
 		    rsa_keys->keys[keynum].fingerprint = NULL;
 		    rsa_keys->keys[keynum].comment = NULL;
 		    rsa_keys->keys[keynum].eprvkey = NULL;
 		    rsa_keys->keys[keynum].pubkey = NULL;
 		    rsa_keys->keys[keynum].hmac_hash_b64 = NULL;
 		    rsa_keys->keys[keynum].evp_keypair = NULL;
-
-		    sprintf(paxhdr_varstring, "TC.pubkey.fingerprint.%d", keynum);
-		    if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
+		    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.pubkey.fingerprint", &paxdata, &paxdatalen) == 0) {
 			strncpya0(&(rsa_keys->keys[keynum].fingerprint), paxdata, paxdatalen);
-		    sprintf(paxhdr_varstring, "TC.eprivkey.%d", keynum);
-		    if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
-			strncpya0(&(rsa_keys->keys[keynum].eprvkey), paxdata, paxdatalen);
-		    sprintf(paxhdr_varstring, "TC.pubkey.%d", keynum);
-		    if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
-			strncpya0(&(rsa_keys->keys[keynum].pubkey), paxdata, paxdatalen);
-		    sprintf(paxhdr_varstring, "TC.hmackeyhash.%d", keynum);
-		    if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0) {
-			strncpya0(&(rsa_keys->keys[keynum].hmac_hash_b64), paxdata, paxdatalen);
-		    }
-		    sprintf(paxhdr_varstring, "TC.keyfile.comment.%d", keynum);
-		    if (getpaxvar(fs.xheader, fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0)
-			strncpya0(&(rsa_keys->keys[keynum].comment), paxdata, paxdatalen);
-		}
-		if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.keygroups", &paxdata, &paxdatalen) == 0) {
-		    strncpya0(&required_keys_str, paxdata, paxdatalen);
-		    parse(required_keys_str, &required_keys_list, ',');
-		    for (int i = 0; required_keys_list[i] != NULL; i++) {
-			parse(required_keys_list[i], &required_keys_group, '|');
-			decode_privkey(rsa_keys, required_keys_group);
-		    }
-		}
-	    }
-	    else if (args.action == EXTRACT && getpaxvar(fs.xheader, fs.xheaderlen, "TC.eprivkey", &paxdata, &paxdatalen) == 0) {
-		if (rsa_keys != NULL) {
-		    for (int i = 0; i < rsa_keys->numkeys; i++) {
-			dfree(rsa_keys->keys[i].comment);
-			dfree(rsa_keys->keys[i].fingerprint);
-			dfree(rsa_keys->keys[i].hmac_hash_b64);
-			dfree(rsa_keys->keys[i].eprvkey);
-			dfree(rsa_keys->keys[i].pubkey);
-			EVP_PKEY_free(rsa_keys->keys[i].evp_keypair);
-		    }
-		    free(rsa_keys->keys);
-		    free(rsa_keys);
-		}
-		keynum = 0;
-		numkeys = 1;
-		rsa_keys = malloc(sizeof(struct rsa_keys));
-		rsa_keys->numkeys = 1;
-		rsa_keys->keys = malloc(sizeof(struct key_st));
-		rsa_keys->keys[keynum].fingerprint = NULL;
-		rsa_keys->keys[keynum].comment = NULL;
-		rsa_keys->keys[keynum].eprvkey = NULL;
-		rsa_keys->keys[keynum].pubkey = NULL;
-		rsa_keys->keys[keynum].hmac_hash_b64 = NULL;
-		rsa_keys->keys[keynum].evp_keypair = NULL;
-		if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.pubkey.fingerprint", &paxdata, &paxdatalen) == 0) {
-		    strncpya0(&(rsa_keys->keys[keynum].fingerprint), paxdata, paxdatalen);
-		    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.eprivkey", &paxdata, &paxdatalen) == 0) {
-			strncpya0(&(rsa_keys->keys[keynum].eprvkey), paxdata, paxdatalen);
-			if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.keyfile.comment", &paxdata, &paxdatalen) == 0) {
-			    strncpya0(&(rsa_keys->keys[keynum].comment), paxdata, paxdatalen);
+			if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.eprivkey", &paxdata, &paxdatalen) == 0) {
+			    strncpya0(&(rsa_keys->keys[keynum].eprvkey), paxdata, paxdatalen);
+			    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.keyfile.comment", &paxdata, &paxdatalen) == 0) {
+				strncpya0(&(rsa_keys->keys[keynum].comment), paxdata, paxdatalen);
+			    }
+			    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.pubkey", &paxdata, &paxdatalen) == 0) {
+				strncpya0(&(rsa_keys->keys[keynum].pubkey), paxdata, paxdatalen);
+			    }
+			    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.hmackeyhash", &paxdata, &paxdatalen) == 0) {
+				strncpya0(&(rsa_keys->keys[keynum].hmac_hash_b64), paxdata, paxdatalen);
+			    }
+			    strncpya0(&required_keys_str, "0", 1);
+			    parse(required_keys_str, &required_keys_group, '|');
+			    decode_privkey(rsa_keys, required_keys_group);
 			}
-			if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.pubkey", &paxdata, &paxdatalen) == 0) {
-			    strncpya0(&(rsa_keys->keys[keynum].pubkey), paxdata, paxdatalen);
-			}
-			if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.hmackeyhash", &paxdata, &paxdatalen) == 0) {
-			    strncpya0(&(rsa_keys->keys[keynum].hmac_hash_b64), paxdata, paxdatalen);
-			}
-			strncpya0(&required_keys_str, "0", 1);
-			parse(required_keys_str, &required_keys_group, '|');
-			decode_privkey(rsa_keys, required_keys_group);
 		    }
 		}
 	    }
 	    continue;
 	}
-	else if(fs.ftype == '0' || getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen) == 0) {
-	    if (args.action == EXTRACT && (getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen) == 0 ||
+	else if(fs.ftype == '0' || (has_segmented_header = getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen)) == 0) {
+	    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen) == 0 ||
 		getpaxvar(fs.xheader, fs.xheaderlen, "TC.cipher", &paxdata, &paxdatalen) == 0 ||
-		getpaxvar(fs.xheader, fs.xheaderlen, "TC.compression", &paxdata, &paxdatalen) == 0)) {
+		getpaxvar(fs.xheader, fs.xheaderlen, "TC.compression", &paxdata, &paxdatalen) == 0) {
 		encoded_tar = 1;
 
 		next_c_fread = fs.io_func;
@@ -799,7 +792,7 @@ int extracttar(int argc, char **argv)
 		    next_c_read_handle = tmr;
 		    tf_encoding |= tf_encoding_tmr;
 		}
-		if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.cipher", &paxdata, &paxdatalen) == 0) {
+		if (args.action != LIST && getpaxvar(fs.xheader, fs.xheaderlen, "TC.cipher", &paxdata, &paxdatalen) == 0) {
 		    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.keygroup", &paxdata, &paxdatalen) == 0) {
 			strncpya0(&required_keys_str, paxdata, paxdatalen);
 			parse(required_keys_str, &required_keys_group, '|');
@@ -851,16 +844,18 @@ int extracttar(int argc, char **argv)
 		    next_c_read_handle = rcf;
 		    tf_encoding |= tf_encoding_cipher;
 		}
-		if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.compression", &paxdata, &paxdatalen) == 0) {
+		if (args.action != LIST && getpaxvar(fs.xheader, fs.xheaderlen, "TC.compression", &paxdata, &paxdatalen) == 0) {
 		    lzf = lzop_init_r(next_c_fread, next_c_read_handle);
 		    next_c_fread = lzop_read;
 		    next_c_read_handle = lzf;
 		    tf_encoding |= tf_encoding_compression;
 		}
-		hmac_keys = rsa_keys->keys[keynum].hmac_key;
-		hmacf = hmac_file_init_r(next_c_fread, next_c_read_handle, &hmac_keys, &hmac_keysz, 1);
-		next_c_fread = hmac_file_read;
-		next_c_read_handle = hmacf;
+		if (args.action != LIST) {
+		    hmac_keys = rsa_keys->keys[keynum].hmac_key;
+		    hmacf = hmac_file_init_r(next_c_fread, next_c_read_handle, &hmac_keys, &hmac_keysz, 1);
+		    next_c_fread = hmac_file_read;
+		    next_c_read_handle = hmacf;
+		}
 	    }
 	    else {
 		next_c_fread = fs.io_func;
@@ -868,17 +863,68 @@ int extracttar(int argc, char **argv)
 		encoded_tar = 0;
 		sizeremaining = fs.filesize;
 	    }
+
+
+	    if (args.verbose == 1 && extract_this_file == 1)
+		print_longtoc_entry(&fs, sizeremaining);
+	    else if (extract_this_file == 1 && args.action == LIST)
+		printf("%s\n", fs.filename);
+
+	    if (*cached_uname == 0 || strcmp(cached_uname, fs.auid) != 0) {
+		strncpy(cached_uname, fs.auid, 63);
+		cached_uname[63] = '\0';
+		if ((cached_pwent = getpwnam(fs.auid)) != NULL)
+		    cached_uid = cached_pwent->pw_uid;
+		else
+		    cached_uid = -1;
+	    }
+	    if (*cached_gname == 0 || strcmp(cached_gname, fs.agid) != 0) {
+		strncpy(cached_gname, fs.agid, 63);
+		cached_gname[63] = '\0';
+		if ((cached_grent = getgrnam(fs.agid)) != NULL)
+		    cached_gid = cached_grent->gr_gid;
+		else
+		    cached_gid = -1; 
+	    }
 	    padding = 512 - ((sizeremaining - 1) % 512 + 1);
+	    if (args.action == DIFF && extract_this_file == 1) {
+		if (lstat(sanitized_filename, &sb) == 0) {
+		    if (sb.st_size != sizeremaining) {
+			fprintf(stderr, "%s size differs\n", sanitized_filename);
+			extract_this_file = 0;
+		    }
+		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
+			fprintf(stderr, "%s exists but is a directory\n", dirname);
+			extract_this_file = 0;
+		    }
+		    if ((sb.st_mode & 07777) != fs.mode) {
+			fprintf(stderr, "File permission doesn't match\n");
+		    }
+		    if (sb.st_uid  != (cached_uid >= 0 ? cached_uid : fs.nuid)) {
+			fprintf(stderr, "User ID doesn't match\n");
+		    }
+		    if (sb.st_gid  != (cached_gid >= 0 ? cached_gid : fs.ngid)) {
+			fprintf(stderr, "Group ID doesn't match\n");
+		    }
+		}
+		else {
+		    fprintf(stderr, "%s not found\n", sanitized_filename);
+		    extract_this_file == 0;
+		}
+	    }
 
 	    outfile = NULL;
-	    if (args.action == EXTRACT && extract_this_file == 1) {
-		mkdir_p(dirname(strncpya0(&filenamec, sanitized_filename, 0)), 0777);
-		outfile = fopen(sanitized_filename, "w");
+	    infile = NULL;
+	    if (extract_this_file == 1) {
+		if (args.action == EXTRACT) {
+		    mkdir_p(dirname(strncpya0(&filenamec, sanitized_filename, 0)), 0777);
+		    outfile = fopen(sanitized_filename, "w");
+		}
+		else if (args.action == DIFF) {
+		    infile = fopen(sanitized_filename, "r");
+		}
 	    }
-	    else if (args.action == DIFF && extract_this_file == 1) {
-		infile = fopen(sanitized_filename, "r");
-	    }
-	    while (sizeremaining > 0) {
+	    while (sizeremaining > 0 || (args.action == LIST && encoded_tar == 1)) {
 		c = next_c_fread(databuf, 1, sizeremaining < bufsize ? sizeremaining : bufsize, next_c_read_handle);
 		if (args.action == EXTRACT && outfile != NULL)
 		    fwrite(databuf, 1, c, outfile);
@@ -890,33 +936,21 @@ int extracttar(int argc, char **argv)
 			fprintf(stderr, "%s differs\n", sanitized_filename);
 		    }
 		}
-		sizeremaining -= c;
-		if (sizeremaining > 0 && c == 0) {
-		    fprintf(stderr, "Problem reading input, aborting.\n");
-		    exit(1);
+		if (args.action != LIST || encoded_tar == 0) {
+		    sizeremaining -= c;
+		    if (sizeremaining > 0 && c == 0) {
+			fprintf(stderr, "Problem reading input, aborting.\n");
+			exit(1);
+		    }
 		}
+		else if (c <= 0)
+		    break;
 	    }
 	    if (encoded_tar == 0 && padding > 0) {
 		c = next_c_fread(padblock, 1, padding, next_c_read_handle);
 	    }
 	    if (outfile != NULL) {
 		fclose(outfile);
-		if (*cached_uname == 0 || strcmp(cached_uname, fs.auid) != 0) {
-		    strncpy(cached_uname, fs.auid, 63);
-		    cached_uname[63] = '\0';
-		    if ((cached_pwent = getpwnam(fs.auid)) != NULL)
-			cached_uid = cached_pwent->pw_uid;
-		    else
-			cached_uid = -1;
-		}
-		if (*cached_gname == 0 || strcmp(cached_gname, fs.agid) != 0) {
-		    strncpy(cached_gname, fs.agid, 63);
-		    cached_gname[63] = '\0';
-		    if ((cached_grent = getgrnam(fs.agid)) != NULL)
-			cached_gid = cached_grent->gr_gid;
-		    else
-			cached_gid = -1; 
-		}
 
 		chown(sanitized_filename, cached_uid >= 0 ? cached_uid : fs.nuid, cached_gid >= 0 ? cached_gid : fs.ngid);
 		chmod(sanitized_filename, fs.mode);
@@ -938,7 +972,7 @@ int extracttar(int argc, char **argv)
 	    if (infile != NULL)
 		fclose(infile);
 
-	    if (encoded_tar == 1) {
+	    if (args.action != LIST && encoded_tar == 1) {
 		hmac_finalize_r(hmacf, &hmacp, &hmac_len);
 		encode_block_16(hmac_b64, hmac, hmac_len);
 		if (strcmp((tf_encoding & tf_encoding_ts) != 0 ? (char *) tsf->hmac[keynum] : (char *) in_hmac_b64, (char *) hmac_b64) != 0)
@@ -956,99 +990,117 @@ int extracttar(int argc, char **argv)
 	    }
 	}
 	else if (fs.ftype == '5') {
-	    if (mkdir_p(sanitized_filename, 0777) == 0) {
-		if (*cached_uname == 0 || strcmp(cached_uname, fs.auid) != 0) {
-		    strncpy(cached_uname, fs.auid, 63);
-		    cached_uname[63] = '\0';
-		    if ((cached_pwent = getpwnam(fs.auid)) != NULL)
-			cached_uid = cached_pwent->pw_uid;
-		    else
-			cached_uid = -1;
-		}
-		if (*cached_gname == 0 || strcmp(cached_gname, fs.agid) != 0) {
-		    strncpy(cached_gname, fs.agid, 63);
-		    cached_gname[63] = '\0';
-		    if ((cached_grent = getgrnam(fs.agid)) != NULL)
-			cached_gid = cached_grent->gr_gid;
-		    else
-			cached_gid = -1; 
-		}
+            if (args.verbose == 1 && extract_this_file == 1)
+                print_longtoc_entry(&fs, sizeremaining);
+	    else if (extract_this_file == 1 && args.action == LIST)
+		printf("%s\n", fs.filename);
+	    if (args.action == EXTRACT) {
+		if (mkdir_p(sanitized_filename, 0777) == 0) {
+		    if (*cached_uname == 0 || strcmp(cached_uname, fs.auid) != 0) {
+			strncpy(cached_uname, fs.auid, 63);
+			cached_uname[63] = '\0';
+			if ((cached_pwent = getpwnam(fs.auid)) != NULL)
+			    cached_uid = cached_pwent->pw_uid;
+			else
+			    cached_uid = -1;
+		    }
+		    if (*cached_gname == 0 || strcmp(cached_gname, fs.agid) != 0) {
+			strncpy(cached_gname, fs.agid, 63);
+			cached_gname[63] = '\0';
+			if ((cached_grent = getgrnam(fs.agid)) != NULL)
+			    cached_gid = cached_grent->gr_gid;
+			else
+			    cached_gid = -1; 
+		    }
 
-		dirpermsc++;
-		if (dirperms == NULL) {
-		    dirperms_p = NULL;
-		    dirperms = malloc(sizeof(struct dirperms));
+		    dirpermsc++;
+		    if (dirperms == NULL) {
+			dirperms_p = NULL;
+			dirperms = malloc(sizeof(struct dirperms));
+		    }
+		    else {
+			dirperms_p = dirperms;
+			dirperms = malloc(sizeof(struct dirperms));
+		    }
+		    dirperms->prev = dirperms_p;
+		    dirperms->filename = malloc(strlen(sanitized_filename) + 1);
+		    strcpy(dirperms->filename, sanitized_filename);
+		    dirperms->uid = (cached_uid >= 0 ? cached_uid : fs.nuid);
+		    dirperms->gid = (cached_gid >= 0 ? cached_gid : fs.ngid);
+		    dirperms->mode = fs.mode;
+		    dirperms->tm.actime = fs.modtime;
+		    dirperms->tm.modtime = fs.modtime;
 		}
 		else {
-		    dirperms_p = dirperms;
-		    dirperms = malloc(sizeof(struct dirperms));
+		    fprintf(stderr, "Failed to create directory %s\n", sanitized_filename);
 		}
-		dirperms->prev = dirperms_p;
-		dirperms->filename = malloc(strlen(sanitized_filename) + 1);
-		strcpy(dirperms->filename, sanitized_filename);
-		dirperms->uid = (cached_uid >= 0 ? cached_uid : fs.nuid);
-		dirperms->gid = (cached_gid >= 0 ? cached_gid : fs.ngid);
-		dirperms->mode = fs.mode;
-		dirperms->tm.actime = fs.modtime;
-		dirperms->tm.modtime = fs.modtime;
-	    }
-	    else {
-		fprintf(stderr, "Failed to create directory %s\n", sanitized_filename);
 	    }
 	}
 	else if (fs.ftype == '1') {
-	    if (lstat(sanitized_filename, &sb) == 0) {
-		if (lstat(sanitize_filename(sanitized_linktarget), &sb2) == 0) {
-		    if (sb2.st_dev != sb.st_dev || sb2.st_ino != sb.st_ino) {
-			if (unlink(sanitized_filename) == 0) {
-			    if (link(sanitize_filename(sanitized_linktarget), sanitized_filename) != 0) {
-				fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
+            if (args.verbose == 1 && extract_this_file == 1)
+                print_longtoc_entry(&fs, sizeremaining);
+	    else if (extract_this_file == 1 && args.action == LIST)
+		printf("%s\n", fs.filename);
+	    if (args.action == EXTRACT) {
+		if (lstat(sanitized_filename, &sb) == 0) {
+		    if (lstat(sanitize_filename(sanitized_linktarget), &sb2) == 0) {
+			if (sb2.st_dev != sb.st_dev || sb2.st_ino != sb.st_ino) {
+			    if (unlink(sanitized_filename) == 0) {
+				if (link(sanitize_filename(sanitized_linktarget), sanitized_filename) != 0) {
+				    fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
+				}
+				else {
+				}
 			    }
-			    else {
-			    }
+			    else
+				fprintf(stderr, "Link: Unable to unlink existing file %s\n", sanitized_filename);
 			}
-			else
-			    fprintf(stderr, "Link: Unable to unlink existing file %s\n", sanitized_filename);
-		    }
-		    else {
+			else {
+			}
 		    }
 		}
-	    }
-	    else {
-		if (link(sanitized_linktarget, sanitized_filename) != 0) {
-		    fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
+		else {
+		    if (link(sanitized_linktarget, sanitized_filename) != 0) {
+			fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
+		    }
 		}
 	    }
 	}
 	else if (fs.ftype == '2') {
-	    if (lstat(sanitized_filename, &sb) == 0) {
-		if (unlink(sanitized_filename) == 0) {
+            if (args.verbose == 1 && extract_this_file == 1)
+                print_longtoc_entry(&fs, sizeremaining);
+	    else if (extract_this_file == 1 && args.action == LIST)
+		printf("%s\n", fs.filename);
+	    if (args.action == EXTRACT) {
+		if (lstat(sanitized_filename, &sb) == 0) {
+		    if (unlink(sanitized_filename) == 0) {
+			if (symlink(sanitized_linktarget, sanitized_filename) != 0) {
+			    fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
+			}
+		    }
+		    else
+			fprintf(stderr, "Link: Unable to unlink existing file %s\n", sanitized_filename);
+		}
+		else {
 		    if (symlink(sanitized_linktarget, sanitized_filename) != 0) {
 			fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
 		    }
 		}
-		else
-		    fprintf(stderr, "Link: Unable to unlink existing file %s\n", sanitized_filename);
-	    }
-	    else {
-		if (symlink(sanitized_linktarget, sanitized_filename) != 0) {
-		    fprintf(stderr, "Link: failed to create link %s\n", sanitized_filename);
+		chown(sanitized_filename, cached_uid >= 0 ? cached_uid : fs.nuid, cached_gid >= 0 ? cached_gid : fs.ngid);
+		chmod(sanitized_filename, fs.mode);
+		struct utimbuf tm;
+		tm.actime = fs.modtime;
+		tm.modtime = fs.modtime;
+		utime(sanitized_filename, &tm);
+		int z = getpaxvarlist(fs.xheader, fs.xheaderlen, &paxvarlist);
+		char *p = paxvarlist;
+		for (int i = 0; i < z; i++) {
+		    if (strcmp("SCHILY.xattr.", p) == 0) {
+			getpaxvar(fs.xheader, fs.xheaderlen, p, &paxdata, &paxdatalen);
+			lsetxattr(sanitized_filename, p + strlen("SCHILY.xattr."), paxdata, paxdatalen, 0);
+		    }
+		    p += strlen(p) + 1;
 		}
-	    }
-	    chown(sanitized_filename, cached_uid >= 0 ? cached_uid : fs.nuid, cached_gid >= 0 ? cached_gid : fs.ngid);
-	    chmod(sanitized_filename, fs.mode);
-	    struct utimbuf tm;
-	    tm.actime = fs.modtime;
-	    tm.modtime = fs.modtime;
-	    utime(sanitized_filename, &tm);
-	    int z = getpaxvarlist(fs.xheader, fs.xheaderlen, &paxvarlist);
-	    char *p = paxvarlist;
-	    for (int i = 0; i < z; i++) {
-		if (strcmp("SCHILY.xattr.", p) == 0) {
-		    getpaxvar(fs.xheader, fs.xheaderlen, p, &paxdata, &paxdatalen);
-		    lsetxattr(sanitized_filename, p + strlen("SCHILY.xattr."), paxdata, paxdatalen, 0);
-		}
-		p += strlen(p) + 1;
 	    }
 	}
 	else
@@ -1226,4 +1278,29 @@ int mkdir_p(char *pathname, int mode)
 int dirperms_cmp(const void *p1, const void *p2)
 {
     return strcmp((*(struct dirperms **) p1)->filename, (*(struct dirperms **) p2)->filename);
+}
+void print_longtoc_entry(struct filespec *fs, size_t realsize)
+{
+	    if (args.verbose == 1) {
+		char modstr[11] = "?rwxrwxrwx";
+		struct tm *filetime;
+		char filetimebuf[64];
+		if (fs->ftype == '0')
+		    modstr[0] = '-';
+		else if (fs->ftype == '1')
+		    modstr[0] = 'h';
+		else if (fs->ftype == '2')
+		    modstr[0] = 'l';
+		else if (fs->ftype == '5')
+		    modstr[0] = 'd';
+		for (int i = 0; i < 9; i++)
+		    if (((fs->mode >> i) & 1) == 0)
+			modstr[9 - i] = '-';
+		filetime = localtime(&(fs->modtime));
+		strftime(filetimebuf, 64, "%Y-%m-%d %H:%M", filetime);
+		if (fs->ftype == '1' || fs->ftype == '2')
+		    fprintf(stderr, "%s %s/%s %5llu %s %s %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename, fs->ftype == '1' ? "link to" : fs->ftype == '2' ? "->" : "", fs->linktarget);
+		else 
+		    fprintf(stderr, "%s %s/%s %5llu %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename);
+	    }
 }
