@@ -1,0 +1,100 @@
+.TH GNE "1" "December 2021" "gne" "User Commands"
+.SH NAME
+gne \- Implementation of tar with public key encryption extensions
+.SH SYNOPSIS
+.SS Common Commands
+.B gne
+\fB\-K\fR \fIKEYFILE\fR
+.sp
+.B gne
+\fB\-c\fR [\fIOPTIONS\fR] [\fB\-k\fR \fIKEYFILE\fR] [\fB\-f\fR \fIARCHIVE\fR] [\fIFILE...\fR]
+.sp
+.B gne
+\fB\-x\fR [\fIOPTIONS\fR] [\fB\-f\fR \fIARCHIVE\fR] [\fIMEMBER...\fR]
+.sp
+.B gne
+\fB\-d\fR [\fIOPTIONS\fR] [\fB\-f\fR \fIARCHIVE\fR] [\fIFILE...\fR]
+.sp
+.B gne
+\fB\-t\fR [\fIOPTIONS\fR] [\fB\-f\fR \fIARCHIVE\fR] [\fIMEMBER...\fR]
+.sp
+.SH DESCRIPTION
+The \fBgne\fR command creates and extracts \fItar\fR files, with many of the common format extensions from \fIGNU tar\fR and \fIPOSIX pax\fR formats.  In addition, \fIgne\fR adds new extensions that cover recording \fIpublic key encryption\fR related parameters.  When used with the [\fB\-k\fR|\fB\-\-encrypt\fR \fIKEYFILE\fR] flag, the public key recorded in \fIKEYFILE\fR is used to encrypt a randomly generated \fIAES256\fR key, which is then used to encrypt an archive member, after applying data compression to the source file.  The passphrase-protected (encrypted) private key in the \fIKEYFILE\fR, along with the public key and other parameters, are recorded in the \fItar\fR file's global header.  Upon extraction, the passphrase will be prompted for, which unlocks the private key, allowing decryption and extraction of the data.  This allows for encrypted backups to be taken without needing to enter a passphrase or key, and the passphrase is only needed at the time of key creation and during file extraction operations.
+.SH OPTIONS
+.SS Primary arguments
+Specify only one of the following upon command invocation.
+.TP
+\fB\-c\fR, \fB\-\-create\fR \fIFILE\fR [\fIFILE...\fR]
+Creates a new \fItar\fR archive.  \fIFILE\fR[\fI...\fR] can specify a list of one or more files or directories.  Directories will be recursively included unless specified otherwise.
+.TP
+\fB\-x\fR, \fB\-\-extract\fR [\fIFILE\fR [\fIFILE...\fR]]
+Extracts members from a \fItar\fR archive.  Default is for all members to be extracted, otherwise only the \fIFILE(s)\fR specified will be processed.
+.TP
+\fB\-d\fR, \fB\-\-diff\fR [\fIFILE\fR [\fIFILE...\fR]]
+Compares members from a \fItar\fR archive to files on disk..  Default is for all members to be compared, otherwise only the \fIFILE(s)\fR specified will be processed.
+.TP
+\fB\-t\fR, \fB\-\-list\fR [\fIFILE\fR [\fIFILE...\fR]]
+Displays a table of contents of a \fItar\fR archive.  Similar to \fI\-x\fR (\fI\-\-extract\fR), default is to list all files unless specific files or directories are specified.
+.TP
+\fB\-E\fR, \fB\-\-genkey\fR \fIKEYFILE\fR
+Generates a public key encryption key file
+.SS Additional arguments
+The following are used in conjunction with one or more of the Primary options
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+When used with \fI\-c\fR (\fI\-\-create\fR), \fI\-x\fR (\fI\-\-extract\fR), or \fIl\-d\fR (\fI\-\-diff\fR), the member file name(s) will be displayed.  When used with \fI\-t\fR (\fI\-\-list\fR), additional metadata (permissions, owner, size, date) will also be displayed.
+.TP
+\fB\-e\fR, \fB\-\-encryptkey\fR \fIKEYFILE\fR
+When used with \fI\-c\fR (\fI\-\-create\fR), files are compressed, then encrypted using the RSA key in \fIKEYFILE\fR to encrypt a random AES key, which in turn is used to encrypt the archive member.  If the compressed & encrypted file is larger than \fIsegment size\fR, the file will appear in the archive as a multi-segment file (see below).
+.PP
+When specified multiple times, \fIKEYFILE\fR the random AES key is encrypted with each RSA key in the specified \fIKEYFILEs\fR.  This allows the use of a backup key in case the passphrase for the primary one is lost.
+.TP
+\fB\-\-passhprase\fR \fIPASSPHRASE\fR
+Optionally specify a passphrase on the command line.  If the passphrase matches one used to encrypt one of the RSA private keys in \fIKEYFILE\fR, it will be used instead of prompting for one.  Can be specified multiple times to provide multiple passphrases to try.
+.TP
+\fB\-\-keycomment\fR \fICOMMENT\fR
+Used with \fI\-E\fR (\fI\-\-genkey\fR), optionally provides a comment to be recorded in the \fIKEYFILE\fR.
+.TP
+\fB\-T, \-\-files-from\fR \fIFILE\fR
+Process files from the given \fIFILE\fR instead of the command line.  The \fIFILE\fR is a list of file paths delimited with newlines.  Add the \fI\-\-null\fR option to use a file delimited with null characters.
+.TP
+\fB\-\-virtual-file\fR \fIPATH\fR[\fIPERMISSION\fR,\fIOWNER\fR,\fIGROUP\fR]=\fIPROGRAM\fR
+Executes the given \fIPROGRAM\fR, using its output to appear in the archive as file name \fIPATH\fR.  If the size of the output stream of \fIPROGRAM\fR is larger than \fIsegment size\fR, the file will appear in the archive as a multi-segment file (see below).
+.TP
+\fB\-\-segment-size\fR \fINUMBER\fR
+Sets the segment size of segmented files.
+.TP
+\fB\-\-exclude\fR \fIPATTERN\fR
+Exclude files matching the pattern specified by \fIPATTERN\fR.
+.SS External backup program integration
+.TP
+\fB\-\-external-backup-init\fR \fIPROGRAM\fR
+When used with \fI-c\fR (\fI--create\fR), calls the given PROGRAM to initialize an external backup system.  The program may generate on its output a number of parameters, including:
+.RS
+.TP
+\fBMANIFEST-FILTER\fR \fIPROGRAM\fR
+Sends the list of files to back up to the given \fIPROGRAM\fR, which may be specified with parameters.  This causes \fIgne\fR to send the list of included files to the specified program, which returns a manifest of actual files to back up.  Files included in the archive will be the output of this program.  This is useful for performing snapshot or incremental backups where the external program manages backup sets.  By default, the output is newline-delimited.
+.TP
+\fBMANIFEST-FILTER-FORMAT\fR [\fBLF\fR|\fBNULL\fR]
+Sets the expected output format of \fIMANIFEST-FILTER\fR.  If \fILF\fR (newline) is specified, files are delimited by a newline (linefeed) character (ASCII 10), and backslash-escapes are processed.  If \fINULL\fR is specified, filenames are null-delimited and no backslash-escapes are processed.
+.TP
+\fBSTREAMPROG\fR \fIPROGRAM\fR
+Can be specified multiple times.  Sends the archive output to \fIPROGRAM\fR, which may be specified with parameters.  If specified more than once, the archive is split up on file boundaries into multiple streams, in a round-robin fashion, skipping over a stream if it is still busy.  The environment variable \fBGNE_STREAM_ID\fR is set to a numeric value identifying the stream, starting with 1.  Also the environment variable \fBGNE_VERBOSE\fR is set to "1" if the verbose flag was specified.
+.TP
+\fBSESSIONID\fR \fISESSION ID\fR
+Sets the environment \fIGNE_SESSIONID\fR to the given \fISESSION ID\fR when launching the programs specified in \fISTREAMPROG\fR or \fIMANIFEST-FILTER\fR.
+.TP
+\fBBEGIN_FEEDBACK\fR
+Begins feedback mode, where each line of output is displayed, and normal feedback from \fIgne\fR is suppressed.
+.TP
+\fBBEGIN_STREAMPROG_FEEDBACK\fR
+Specifies that the output of STEAMPROG is displayed, and normal feedback from \fIgne\fR is suppressed.
+.TP
+\fBUSERVAR\fR \fIVARNAME\fR \fIValue\fR
+Sets an environment variable name composed of 'GNE_USERENV_' followed by \fIVARNAME\fR  to be set to the contents of \fIValue\fR when calling \fIMANIFEST-FILTER\fR and \fISTREAMPROG\fR.  Useful for setting a session ID variable.
+.RE
+.SH FORMAT NOTES
+When required, output is in PAX format, utilizing custom PAX variables.  In addition, since tar is a streaming archiver, normally the tar format requires knowledge of the size of the member as it appears in the archive.  This would normally make it impractical to apply compression/encryption or any other transformation to files while writing to the archive, as the final encoded size wouldn't be known unless two passes are made.  To solve this, data is written to an in-memory buffer when being encoded.  If the end of the input file is reached prior to the buffer becoming full, then the file path remains the same, and header information is generated/written out, followed by the encoded file contents.  However, if the buffer fills, then the file path is converted to a directory name, followed by a file name reflecting the segment number.  For example, an input file /data/foo becomes /data/foo/part.00000000, /data/foo/part.000000001, etc.  The on extraction, these are automatically recombined as needed.  This means that if extracting with a non-compatible tar utility, those files can be combined and decoded manually to recreate the original data.
+.PP
+Full details are in the gne.5 manpage.
+
