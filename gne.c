@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <ftw.h>
 #include <utime.h>
+#include <fnmatch.h>
 #include "tarlib.h"
 #include <libgen.h>
 
@@ -66,10 +67,13 @@ struct {
     char *keyfile;
     char *keycomment;
     int verbose;
+    char *exclude;
 } args;
 int numkeys = 0;
 char *numkeys_string = NULL;
 int keyfiles_len = 0;
+int numexclude = 0;
+int exclude_len = 0;
 struct key_st *keys;
 
 EVP_PKEY **evp_keypair;
@@ -146,6 +150,7 @@ int getargs(int argc, char **argv)
 	{ "encryptkey", required_argument, NULL, 'e'},
 	{ "genkey", required_argument, NULL, 'E' },
 	{ "keycomment", required_argument, NULL, 0 },
+	{ "exclude", required_argument, NULL, 0},
 	{ NULL, no_argument, NULL, 0 }
 
     };
@@ -156,6 +161,7 @@ int getargs(int argc, char **argv)
     args.keyfile = NULL;
     args.keycomment = NULL;
     args.verbose = 0;
+    args.exclude = NULL;
     while ((optc = getopt_long(argc, argv, "cxtvdE:f:D:e:", longopts, &longoptidx)) >= 0) {
 	switch (optc) {
 	    case 'c':
@@ -209,7 +215,6 @@ int getargs(int argc, char **argv)
 		strncpya0(&args.passphrase, optarg, 0);
 		break;
 	    case 'e':
-//		strncpya0(&args.keyfile, optarg, 0);
 		memcpyao((void **) &args.keyfile, optarg, strlen(optarg), keyfiles_len);
 		keyfiles_len += strlen(optarg) + 1;
 		numkeys++;
@@ -217,6 +222,21 @@ int getargs(int argc, char **argv)
 	    case 0:
 		if (strcmp("keycomment", longopts[longoptidx].name) == 0) {
 		    strncpya0(&args.keycomment, optarg, 0);
+		}
+		if (strcmp("exclude", longopts[longoptidx].name) == 0) {
+		    memcpyao((void **) &args.exclude, optarg, strlen(optarg), exclude_len);
+		    exclude_len += strlen(optarg);
+		    memcpyao((void **) &args.exclude, "\0", 1, exclude_len);
+		    exclude_len += 1;
+		    numexclude++;
+
+		    memcpyao((void **) &args.exclude, "*/", 2, exclude_len);
+		    exclude_len += 2;
+		    memcpyao((void **) &args.exclude, optarg, strlen(optarg), exclude_len);
+		    exclude_len += strlen(optarg);
+		    memcpyao((void **) &args.exclude, "\0", 1, exclude_len);
+		    exclude_len += 1;
+		    numexclude++;
 		}
 		break;
 	    default:
@@ -262,13 +282,29 @@ int create_tar(int argc, char **argv)
 	free(hmac_keys);
 	free(hmac_keysz);
     }
+    if (args.exclude != NULL)
+	dfree(args.exclude);
     return(0);
 }
 
 // Wrapper that calls writeTarEntry from nftw()
 int call_tar(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftwbuf)
 {
-    writeTarEntry((char *) fpath, (struct stat *) sb);
+    char *curexclude = args.exclude;
+    int exclude_this_file = 0;
+
+    if (curexclude != NULL) {
+	for (int i = 0; i < numexclude; i++) {
+	    if (fnmatch(curexclude, fpath, 0) == 0) {
+		exclude_this_file = 1;
+		break;
+	    }
+	    curexclude += strlen(curexclude) + 1;
+	}
+    }
+
+    if (exclude_this_file == 0)
+	writeTarEntry((char *) fpath, (struct stat *) sb);
     return(0);
 }
 
@@ -894,7 +930,7 @@ int extracttar(int argc, char **argv)
 			extract_this_file = 0;
 		    }
 		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
-			fprintf(stderr, "%s exists but is a directory\n", dirname);
+			fprintf(stderr, "%s exists but is a directory\n", sanitized_filename);
 			extract_this_file = 0;
 		    }
 		    if ((sb.st_mode & 07777) != fs.mode) {
@@ -909,7 +945,6 @@ int extracttar(int argc, char **argv)
 		}
 		else {
 		    fprintf(stderr, "%s not found\n", sanitized_filename);
-		    extract_this_file == 0;
 		}
 	    }
 
@@ -1299,8 +1334,8 @@ void print_longtoc_entry(struct filespec *fs, size_t realsize)
 		filetime = localtime(&(fs->modtime));
 		strftime(filetimebuf, 64, "%Y-%m-%d %H:%M", filetime);
 		if (fs->ftype == '1' || fs->ftype == '2')
-		    fprintf(stderr, "%s %s/%s %5llu %s %s %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename, fs->ftype == '1' ? "link to" : fs->ftype == '2' ? "->" : "", fs->linktarget);
+		    fprintf(stderr, "%s %s/%s %5lu %s %s %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename, fs->ftype == '1' ? "link to" : fs->ftype == '2' ? "->" : "", fs->linktarget);
 		else 
-		    fprintf(stderr, "%s %s/%s %5llu %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename);
+		    fprintf(stderr, "%s %s/%s %5lu %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename);
 	    }
 }
