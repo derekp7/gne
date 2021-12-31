@@ -44,6 +44,9 @@ The following are used in conjunction with one or more of the Primary options
 \fB\-v\fR, \fB\-\-verbose\fR
 When used with \fI\-c\fR (\fI\-\-create\fR), \fI\-x\fR (\fI\-\-extract\fR), or \fIl\-d\fR (\fI\-\-diff\fR), the member file name(s) will be displayed.  When used with \fI\-t\fR (\fI\-\-list\fR), additional metadata (permissions, owner, size, date) will also be displayed.
 .TP
+\fB\-C\fR, \fB\-\-directory\fR \fIDIRECTORY\fR
+Changes to \fIDIRECTORY\fR before performing any operations.
+.TP
 \fB\-e\fR, \fB\-\-encryptkey\fR \fIKEYFILE\fR
 When used with \fI\-c\fR (\fI\-\-create\fR), files are compressed, then encrypted using the RSA key in \fIKEYFILE\fR to encrypt a random AES key, which in turn is used to encrypt the archive member.  If the compressed & encrypted file is larger than \fIsegment size\fR, the file will appear in the archive as a multi-segment file (see below).
 .PP

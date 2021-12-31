@@ -68,6 +68,7 @@ struct {
     char *keycomment;
     int verbose;
     char *exclude;
+    char *chdir;
 } args;
 int numkeys = 0;
 char *numkeys_string = NULL;
@@ -105,6 +106,11 @@ int main(int argc, char **argv)
     if ((f = getargs(argc, argv)) < 0)
 	exit(1);
 
+    if (args.chdir != NULL)
+	if (chdir(args.chdir) != 0) {
+	    fprintf(stderr, "Error changing to directory %s\n", args.chdir);
+	    exit(1);
+	}
     if (args.action == CREATE) {
 	create_tar(argc - f, argv + f);
     }
@@ -129,6 +135,7 @@ int main(int argc, char **argv)
     dfree(args.passphrase);
     dfree(args.keyfile);
     dfree(args.keycomment);
+    dfree(args.chdir);
 
     exit(0);
 }
@@ -145,6 +152,7 @@ int getargs(int argc, char **argv)
 	{ "diff", no_argument, NULL, 'd' },
 	{ "compare", no_argument, NULL, 'd' },
 	{ "verbose", no_argument, NULL, 'v' },
+	{ "directory", no_argument, NULL, 'C' },
 	{ "file", required_argument, NULL, 'f' },
 	{ "passphrase", required_argument, NULL, 'D' },
 	{ "encryptkey", required_argument, NULL, 'e'},
@@ -162,7 +170,8 @@ int getargs(int argc, char **argv)
     args.keycomment = NULL;
     args.verbose = 0;
     args.exclude = NULL;
-    while ((optc = getopt_long(argc, argv, "cxtvdE:f:D:e:", longopts, &longoptidx)) >= 0) {
+    args.chdir = NULL;
+    while ((optc = getopt_long(argc, argv, "cxtvdC:E:f:D:e:", longopts, &longoptidx)) >= 0) {
 	switch (optc) {
 	    case 'c':
 		if (args.action != 0) {
@@ -195,6 +204,9 @@ int getargs(int argc, char **argv)
 		    return(-1);
 		}
 		args.action = DIFF;
+		break;
+	    case 'C':
+		strncpya0(&args.chdir, optarg, 0);
 		break;
 	    case 'E':
 		if (args.action != 0) {

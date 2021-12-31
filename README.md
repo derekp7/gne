@@ -8,7 +8,7 @@ Tar Genie (`gne`) is a new implementation of the Unix `tar` program that include
 
 The traditional method of encrypting a tar file produces a completely opaque output encrypted file.  You can't perform a directory listing or pull any other metadata from it (which may be desirable for some limited circumstances, such as if the file names or sizes are sensitive information), however if used as part of an overall backup strategy the metadata may be needed.  Think of it as similar to the functionality of an encrypted *.zip* archive.
 
-Another benefit is that the RSA keyfile used to encrypt the archive is included in the header (with the private key passphrase protected), so all you need to provide is a password to decrypt the tar file.
+Another benefit is that the RSA keyfile used to encrypt the archive is included in the header (with the private key passphrase protected), so all you need to provide is a password to decrypt the tar file.  Yet when backing up, no password/passphrase is required.
 
 - *Is there any security concerns to leave the encryption keyfile on the computer?*
 
@@ -110,6 +110,8 @@ The following are used in conjunction with one or more of the Primary options
 
 * **-v**, **--verbose**  
   When used with _-c_ (_--create_), _-x_ (_--extract_), or _l-d_ (_--diff_), the member file name(s) will be displayed.  When used with _-t_ (_--list_), additional metadata (permissions, owner, size, date) will also be displayed.
+* **-C**, **--directory** _DIRECTORY_  
+  Changes to _DIRECTORY_ before performing any operations.
 * **-e**, **--encryptkey** _KEYFILE_  
   When used with _-c_ (_--create_), files are compressed, then encrypted using the RSA key in _KEYFILE_ to encrypt a random AES key, which in turn is used to encrypt the archive member.  If the compressed & encrypted file is larger than _segment size_, the file will appear in the archive as a multi-segment file (see below).
 
