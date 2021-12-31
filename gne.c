@@ -69,6 +69,7 @@ struct {
     int verbose;
     char *exclude;
     char *chdir;
+    int no_cross_fs;
 } args;
 int numkeys = 0;
 char *numkeys_string = NULL;
@@ -159,6 +160,7 @@ int getargs(int argc, char **argv)
 	{ "genkey", required_argument, NULL, 'E' },
 	{ "keycomment", required_argument, NULL, 0 },
 	{ "exclude", required_argument, NULL, 0},
+	{ "one-file-system", no_argument, NULL, 0},
 	{ NULL, no_argument, NULL, 0 }
 
     };
@@ -169,6 +171,7 @@ int getargs(int argc, char **argv)
     args.keyfile = NULL;
     args.keycomment = NULL;
     args.verbose = 0;
+    args.no_cross_fs = 0;
     args.exclude = NULL;
     args.chdir = NULL;
     while ((optc = getopt_long(argc, argv, "cxtvdC:E:f:D:e:", longopts, &longoptidx)) >= 0) {
@@ -250,6 +253,9 @@ int getargs(int argc, char **argv)
 		    exclude_len += 1;
 		    numexclude++;
 		}
+		if (strcmp("one-file-system", longopts[longoptidx].name) == 0) {
+		    args.no_cross_fs = 1;
+		}
 		break;
 	    default:
 		usage();
@@ -266,6 +272,7 @@ void *usage()
 
 int create_tar(int argc, char **argv)
 {
+    int nftw_flags = 0;
     if (args.filename != NULL) {
 	args.io_func = fwrite;
 	if ((args.io_handle = fopen(args.filename, "w")) == NULL) {
@@ -279,6 +286,9 @@ int create_tar(int argc, char **argv)
     }
     if (args.keyfile != NULL)
 	writeGlobalHdr();
+    nftw_flags |= FTW_PHYS;
+    if (args.no_cross_fs == 1)
+	nftw_flags |= FTW_MOUNT;
     for (int i = 0; i < argc; i++) {
 	// Walk the directory tree for each filename specified
 	nftw(argv[i], call_tar, 800, FTW_PHYS);

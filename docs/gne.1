@@ -47,6 +47,9 @@ When used with \fI\-c\fR (\fI\-\-create\fR), \fI\-x\fR (\fI\-\-extract\fR), or \
 \fB\-C\fR, \fB\-\-directory\fR \fIDIRECTORY\fR
 Changes to \fIDIRECTORY\fR before performing any operations.
 .TP
+\fB\-\-one-file-system\fR
+Restricts directory descent to directory's current file system (don't cross mount points).
+.TP
 \fB\-e\fR, \fB\-\-encryptkey\fR \fIKEYFILE\fR
 When used with \fI\-c\fR (\fI\-\-create\fR), files are compressed, then encrypted using the RSA key in \fIKEYFILE\fR to encrypt a random AES key, which in turn is used to encrypt the archive member.  If the compressed & encrypted file is larger than \fIsegment size\fR, the file will appear in the archive as a multi-segment file (see below).
 .PP
