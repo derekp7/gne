@@ -112,6 +112,8 @@ The following are used in conjunction with one or more of the Primary options
   When used with _-c_ (_--create_), _-x_ (_--extract_), or _l-d_ (_--diff_), the member file name(s) will be displayed.  When used with _-t_ (_--list_), additional metadata (permissions, owner, size, date) will also be displayed.
 * **-C**, **--directory** _DIRECTORY_  
   Changes to _DIRECTORY_ before performing any operations.
+* **-P**, **--absolute-names**  
+  Do not strip out leading "/" on path names when extracting archive.
 * **--one-file-system**  
   Restricts directory descent to directory's current file system (don't cross mount points).
 * **-e**, **--encryptkey** _KEYFILE_  

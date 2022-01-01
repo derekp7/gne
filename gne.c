@@ -70,6 +70,8 @@ struct {
     char *exclude;
     char *chdir;
     int no_cross_fs;
+    int no_recursion;
+    int absolute_names;
 } args;
 int numkeys = 0;
 char *numkeys_string = NULL;
@@ -153,6 +155,7 @@ int getargs(int argc, char **argv)
 	{ "diff", no_argument, NULL, 'd' },
 	{ "compare", no_argument, NULL, 'd' },
 	{ "verbose", no_argument, NULL, 'v' },
+	{ "absolute-names", no_argument, NULL, 'P' },
 	{ "directory", no_argument, NULL, 'C' },
 	{ "file", required_argument, NULL, 'f' },
 	{ "passphrase", required_argument, NULL, 'D' },
@@ -161,6 +164,7 @@ int getargs(int argc, char **argv)
 	{ "keycomment", required_argument, NULL, 0 },
 	{ "exclude", required_argument, NULL, 0},
 	{ "one-file-system", no_argument, NULL, 0},
+	{ "no-recursion", no_argument, NULL, 0},
 	{ NULL, no_argument, NULL, 0 }
 
     };
@@ -174,6 +178,8 @@ int getargs(int argc, char **argv)
     args.no_cross_fs = 0;
     args.exclude = NULL;
     args.chdir = NULL;
+    args.no_recursion = 0;
+    args.absolute_names = 0;
     while ((optc = getopt_long(argc, argv, "cxtvdC:E:f:D:e:", longopts, &longoptidx)) >= 0) {
 	switch (optc) {
 	    case 'c':
@@ -223,6 +229,9 @@ int getargs(int argc, char **argv)
 	    case 'v':
 		args.verbose = 1;
 		break;
+	    case 'P':
+		args.absolute_names = 1;
+		break;
 	    case 'f':
 		strncpya0(&args.filename, optarg, 0);
 		break;
@@ -256,6 +265,9 @@ int getargs(int argc, char **argv)
 		if (strcmp("one-file-system", longopts[longoptidx].name) == 0) {
 		    args.no_cross_fs = 1;
 		}
+		if (strcmp("no-recursion", longopts[longoptidx].name) == 0) {
+		    args.no_recursion = 1;
+		}
 		break;
 	    default:
 		usage();
@@ -273,6 +285,8 @@ void *usage()
 int create_tar(int argc, char **argv)
 {
     int nftw_flags = 0;
+    struct stat sb;
+
     if (args.filename != NULL) {
 	args.io_func = fwrite;
 	if ((args.io_handle = fopen(args.filename, "w")) == NULL) {
@@ -287,11 +301,18 @@ int create_tar(int argc, char **argv)
     if (args.keyfile != NULL)
 	writeGlobalHdr();
     nftw_flags |= FTW_PHYS;
-    if (args.no_cross_fs == 1)
-	nftw_flags |= FTW_MOUNT;
-    for (int i = 0; i < argc; i++) {
-	// Walk the directory tree for each filename specified
-	nftw(argv[i], call_tar, 800, FTW_PHYS);
+    if (args.no_recursion == 0) {
+	if (args.no_cross_fs == 1)
+	    nftw_flags |= FTW_MOUNT;
+	for (int i = 0; i < argc; i++) {
+	    // Walk the directory tree for each filename specified
+	    nftw(argv[i], call_tar, 800, FTW_PHYS);
+	}
+    }
+    else {
+	for (int i = 0; i < argc; i++)
+	    if (lstat(argv[i], &sb) == 0)
+		call_tar(argv[i], &sb, 0, NULL);
     }
     fclose(args.io_handle);
     if (numkeys > 0) {
@@ -430,19 +451,19 @@ int writeTarEntry(char *filename, struct stat *md)
     static char *tmpxattrn = NULL;
     static int first = 0;
     static int cached_uid = -1;
-    static char cached_uname[64];
+    static char cached_uname[32];
     static int cached_gid = -1;
-    static char cached_gname[64];
+    static char cached_gname[32];
     char tmptime[32];
     static struct filespec fs;
     static struct {
 	char **tmpxattrn;
 	struct filespec *fs;
     } cleanup_objs;
-    struct tarsplit_file *tsf;
-    struct hmac_file *hmacf;
-    struct lzop_file *lzf;
-    struct rsa_file *rcf;
+    struct tarsplit_file *tsf = NULL;
+    struct hmac_file *hmacf = NULL;
+    struct lzop_file *lzf = NULL;
+    struct rsa_file *rcf = NULL;
     size_t (*fwrite_func)();
     void *fwrite_handle;
     struct prev_link *prev_link;
@@ -504,11 +525,12 @@ int writeTarEntry(char *filename, struct stat *md)
 
     if (cached_uid >= 0 && md->st_uid == cached_uid) {
 	strncpy(fs.auid, cached_uname, 32);
+	fs.auid[31] = '\0';
     }
     else {
 	if ((pwent = getpwuid(md->st_uid)) > 0) {
 	    strncpy(cached_uname, pwent->pw_name, 32);
-	    cached_uname[32] = 0;
+	    cached_uname[31] = 0;
 	    strncpy(fs.auid, cached_uname, 32);
 	    cached_uid = md->st_uid;
 	}
@@ -518,7 +540,7 @@ int writeTarEntry(char *filename, struct stat *md)
     else {
 	if ((grent = getgrgid(md->st_gid)) > 0) {
 	    strncpy(cached_gname, grent->gr_name, 32);
-	    cached_gname[32] = 0;
+	    cached_gname[31] = 0;
 	    strncpy(fs.agid, cached_gname, 32);
 	    cached_gid = md->st_gid;
 	}
@@ -632,14 +654,14 @@ int extracttar(int argc, char **argv)
     char databuf[bufsize];
     char databuf2[bufsize];
     struct tarsplit_file *tsf = NULL;
-    size_t sizeremaining;
+    size_t sizeremaining = 0;
     size_t padding;
     char padblock[512];
     size_t c;
     struct tar_maxread_st *tmr = NULL;
     struct lzop_file *lzf = NULL;
     struct rsa_file *rcf = NULL;
-    struct hmac_file *hmacf;
+    struct hmac_file *hmacf = NULL;
     char *paxdata;
     int paxdatalen;
     EVP_PKEY *evp_keypair = NULL;
@@ -1252,6 +1274,9 @@ char *sanitize_filename(char *inname)
 {
     char *p;
     char *s = inname;
+
+    if (args.absolute_names == 1)
+	return(s);
     if (strncmp(s, "../", 3) == 0)
 	s += 3;
     while ((p = strstr(s, "/../")) != NULL)
