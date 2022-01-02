@@ -16,8 +16,7 @@
  *
  */
 
-#define _XOPEN_SOURCE 700
-#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -32,6 +31,28 @@
 #include <fnmatch.h>
 #include "tarlib.h"
 #include <libgen.h>
+
+#ifndef st_mtimensec
+    #ifdef __DARWIN_STRUCT_STAT64_TIMES
+	#define st_mtimensec st_mtimespec.tv_nsec
+    #else
+	#define st_mtimensec st_mtim.tv_nsec
+    #endif
+#endif
+#ifndef st_atimensec
+    #ifdef __DARWIN_STRUCT_STAT64_TIMES
+	#define st_atimensec st_atimespec.tv_nsec
+    #else
+	#define st_atimensec st_atim.tv_nsec
+    #endif
+#endif
+#ifndef st_ctimensec
+    #ifdef __DARWIN_STRUCT_STAT64_TIMES
+	#define st_ctimensec st_ctimespec.tv_nsec
+    #else
+	#define st_ctimensec st_ctim.tv_nsec
+    #endif
+#endif
 
 struct filespec fs;
 #ifdef XATTR
@@ -517,11 +538,11 @@ int writeTarEntry(char *filename, struct stat *md)
     fs.nuid = md->st_uid;
     fs.ngid = md->st_gid;
     fs.modtime = md->st_mtime;
-    sprintf(tmptime, "%ld.%.9ld", md->st_mtim.tv_sec, md->st_mtim.tv_nsec);
+    sprintf(tmptime, "%ld.%.9ld", md->st_mtime, md->st_mtimensec);
     setpaxvar(&fs.xheader, &fs.xheaderlen, "mtime", tmptime, strlen(tmptime));
-    sprintf(tmptime, "%ld.%.9ld", md->st_atim.tv_sec, md->st_atim.tv_nsec);
+    sprintf(tmptime, "%ld.%.9ld", md->st_atime, md->st_atimensec);
     setpaxvar(&fs.xheader, &fs.xheaderlen, "atime", tmptime, strlen(tmptime));
-    sprintf(tmptime, "%ld.%.9ld", md->st_ctim.tv_sec, md->st_ctim.tv_nsec);
+    sprintf(tmptime, "%ld.%.9ld", md->st_ctime, md->st_ctimensec);
     setpaxvar(&fs.xheader, &fs.xheaderlen, "ctime", tmptime, strlen(tmptime));
 
     if (cached_uid >= 0 && md->st_uid == cached_uid) {
