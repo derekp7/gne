@@ -24,8 +24,11 @@ An HMAC hash is generated of the public key using the provided private key as th
 it is instead re-created using the public key and the user-supplied password when extracting files from the archive.
 
 ## Compile:
+Requires OpenSSL 1.1.x and lzo2 libraries
 
-    gcc gne.c tarlib.c -l crypto -l ssl -l lzo2 -o gne
+    gcc gne.c tarlib.c -l crypto -l ssl -l lzo2 -o gne -DXATTR
+
+(Leave off "-DXATTR" if your OS doesn't support listxattr() / setxattr() calls)
 
 ## Examples
 

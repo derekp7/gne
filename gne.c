@@ -22,7 +22,9 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <grp.h>
-#include <sys/xattr.h>
+#ifdef XATTR
+  #include <sys/xattr.h>
+#endif
 #include <pwd.h>
 #include <sys/stat.h>
 #include <ftw.h>
@@ -32,6 +34,9 @@
 #include <libgen.h>
 
 struct filespec fs;
+#ifdef XATTR
+static char *tmpxattrn = NULL;
+#endif
 int create_tar(int argc, char **argv);
 int extracttar(int argc, char **argv);
 int writeTarEntry(char *filename, struct stat *md);
@@ -100,7 +105,7 @@ struct {
 void set_prev_link(dev_t dev, ino_t inode, char *filename);
 struct prev_link *get_prev_link(dev_t dev, ino_t inode);
 
-void cleanups(int v, void *cleanup_objs);
+//void cleanups(int v, void *cleanup_objs);
 
 int main(int argc, char **argv)
 {
@@ -327,6 +332,10 @@ int create_tar(int argc, char **argv)
     }
     if (args.exclude != NULL)
 	dfree(args.exclude);
+    fsfree(&fs);
+#ifdef XATTR
+    dfree(tmpxattrn);
+#endif
     return(0);
 }
 
@@ -443,23 +452,19 @@ int writeTarEntry(char *filename, struct stat *md)
     struct passwd *pwent;
     struct group *grent;
     char buf[512];
+#ifdef XATTR
     ssize_t nxattrs;
     ssize_t szxattrv;
     char xattrs[1025];
     char xattrv[1025];
     char *xattrsp;
-    static char *tmpxattrn = NULL;
+#endif
     static int first = 0;
     static int cached_uid = -1;
     static char cached_uname[32];
     static int cached_gid = -1;
     static char cached_gname[32];
     char tmptime[32];
-    static struct filespec fs;
-    static struct {
-	char **tmpxattrn;
-	struct filespec *fs;
-    } cleanup_objs;
     struct tarsplit_file *tsf = NULL;
     struct hmac_file *hmacf = NULL;
     struct lzop_file *lzf = NULL;
@@ -472,10 +477,6 @@ int writeTarEntry(char *filename, struct stat *md)
 	fsinit(&fs);
 	fs.io_func = args.io_func;
 	fs.io_handle = args.io_handle;
-	cleanup_objs.tmpxattrn = &tmpxattrn;
-	cleanup_objs.fs = &fs;
-	on_exit(cleanups, &cleanup_objs);
-
 	first = 1;
     }
 
@@ -545,9 +546,9 @@ int writeTarEntry(char *filename, struct stat *md)
 	    cached_gid = md->st_gid;
 	}
     }
+#ifdef XATTR
     memset(xattrv, 0, 1025);
     memset(xattrs, 0, 1025);
-
     nxattrs = llistxattr(filename, xattrs, 1024);
     xattrsp = xattrs;
     for (int i = 0; nxattrs > 0; i++) {
@@ -558,6 +559,7 @@ int writeTarEntry(char *filename, struct stat *md)
 	nxattrs -= (strlen(xattrsp) + 1);
 	xattrsp += strlen(xattrsp) + 1;
     }
+#endif
     if (args.verbose == 1) {
 	fprintf(stderr, "%s\n", fs.filename);
     }
@@ -635,12 +637,6 @@ char *itoa(char *s, int n)
 {
     sprintf(s, "%d", n);
     return(s);
-}
-void cleanups(int v, void *cleanup_objs)
-{
-    dfree( *((( struct { char **tmpxattrn; struct filespec *fs; } *) cleanup_objs)->tmpxattrn));
-    fsfree( (( struct { char **tmpxattrn; struct filespec *fs; } *) cleanup_objs)->fs);
-    return;
 }
 
 #define tf_encoding_ts 1
@@ -1037,6 +1033,7 @@ int extracttar(int argc, char **argv)
 		tm.actime = fs.modtime;
 		tm.modtime = fs.modtime;
 		utime(sanitized_filename, &tm);
+#ifdef XATTR
 		int z = getpaxvarlist(fs.xheader, fs.xheaderlen, &paxvarlist);
 		char *p = paxvarlist;
 		for (int i = 0; i < z; i++) {
@@ -1046,6 +1043,7 @@ int extracttar(int argc, char **argv)
 		    }
 		    p += strlen(p) + 1;
 		}
+#endif
 
 	    }
 	    if (infile != NULL)
@@ -1171,6 +1169,7 @@ int extracttar(int argc, char **argv)
 		tm.actime = fs.modtime;
 		tm.modtime = fs.modtime;
 		utime(sanitized_filename, &tm);
+#ifdef XATTR
 		int z = getpaxvarlist(fs.xheader, fs.xheaderlen, &paxvarlist);
 		char *p = paxvarlist;
 		for (int i = 0; i < z; i++) {
@@ -1180,6 +1179,7 @@ int extracttar(int argc, char **argv)
 		    }
 		    p += strlen(p) + 1;
 		}
+#endif
 	    }
 	}
 	else
