@@ -26,7 +26,7 @@ it is instead re-created using the public key and the user-supplied password whe
 ## Compile:
 Requires OpenSSL 1.1.x and lzo2 libraries
 
-    gcc gne.c tarlib.c -l crypto -l ssl -l lzo2 -o gne -DXATTR
+    gcc -std=c99 gne.c tarlib.c -l crypto -l ssl -l lzo2 -o gne -DXATTR
 
 (Leave off "-DXATTR" if your OS doesn't support listxattr() / setxattr() calls)
 
