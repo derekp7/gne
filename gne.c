@@ -70,6 +70,8 @@ char *sanitize_filename(char *inname);
 void *usage();
 int mkdir_p(char *pathname, int mode);
 void print_longtoc_entry(struct filespec *fs, size_t realsize);
+char *strunesc(char *src, char **target);
+long int strtoln(char *nptr, char **endptr, int base, int len);
 struct dirperms {
     struct dirperms *prev;
     char *filename;
@@ -87,6 +89,7 @@ int dirperms_cmp(const void *p1, const void *p2);
 struct {
     int action;
     char *filename;
+    char *files_from;
     size_t (*io_func)();
     void *io_handle;
     char *passphrase;
@@ -183,6 +186,7 @@ int getargs(int argc, char **argv)
 	{ "verbose", no_argument, NULL, 'v' },
 	{ "absolute-names", no_argument, NULL, 'P' },
 	{ "directory", no_argument, NULL, 'C' },
+	{ "files-from", no_argument, NULL, 'T' },
 	{ "file", required_argument, NULL, 'f' },
 	{ "passphrase", required_argument, NULL, 'D' },
 	{ "encryptkey", required_argument, NULL, 'e'},
@@ -197,6 +201,7 @@ int getargs(int argc, char **argv)
 
     args.action = 0;
     args.filename = NULL;
+    args.files_from = NULL;
     args.passphrase = NULL;
     args.keyfile = NULL;
     args.keycomment = NULL;
@@ -206,7 +211,7 @@ int getargs(int argc, char **argv)
     args.chdir = NULL;
     args.no_recursion = 0;
     args.absolute_names = 0;
-    while ((optc = getopt_long(argc, argv, "cxtvdC:E:f:D:e:", longopts, &longoptidx)) >= 0) {
+    while ((optc = getopt_long(argc, argv, "cxtvdT:C:E:f:D:e:", longopts, &longoptidx)) >= 0) {
 	switch (optc) {
 	    case 'c':
 		if (args.action != 0) {
@@ -261,6 +266,9 @@ int getargs(int argc, char **argv)
 	    case 'f':
 		strncpya0(&args.filename, optarg, 0);
 		break;
+	    case 'T':
+		strncpya0(&args.files_from, optarg, 0);
+		break;
 	    case 'D':
 		strncpya0(&args.passphrase, optarg, 0);
 		break;
@@ -312,6 +320,10 @@ int create_tar(int argc, char **argv)
 {
     int nftw_flags = 0;
     struct stat sb;
+    FILE *ffh = NULL;
+    char *fntext = NULL;
+    char *fntextu = NULL;
+    size_t fnalloc = 0;
 
     if (args.filename != NULL) {
 	args.io_func = fwrite;
@@ -327,6 +339,9 @@ int create_tar(int argc, char **argv)
     if (args.keyfile != NULL)
 	writeGlobalHdr();
     nftw_flags |= FTW_PHYS;
+    if (args.files_from != NULL) {
+	ffh = fopen(args.files_from, "r");
+    }
     if (args.no_recursion == 0) {
 	if (args.no_cross_fs == 1)
 	    nftw_flags |= FTW_MOUNT;
@@ -334,13 +349,31 @@ int create_tar(int argc, char **argv)
 	    // Walk the directory tree for each filename specified
 	    nftw(argv[i], call_tar, 800, FTW_PHYS);
 	}
+	if (ffh != NULL) {
+	    while (getline(&fntext, &fnalloc, ffh) > 0) {
+		fntext[strlen(fntext) - 1] = '\0';
+		strunesc(fntext, &fntextu);
+		nftw(fntextu, call_tar, 800, FTW_PHYS);
+	    }
+	}
     }
     else {
 	for (int i = 0; i < argc; i++)
 	    if (lstat(argv[i], &sb) == 0)
 		call_tar(argv[i], &sb, 0, NULL);
+	if (ffh != NULL) {
+	    while (getline(&fntext, &fnalloc, ffh) > 0) {
+		fntext[strlen(fntext) - 1] = '\0';
+		strunesc(fntext, &fntextu);
+		nftw(fntextu, call_tar, 800, FTW_PHYS);
+	    }
+	}
     }
     fclose(args.io_handle);
+    if (ffh != NULL)
+	fclose(ffh);
+    if (fnalloc > 0)
+	free(fntext);
     if (numkeys > 0) {
 	for (int i = 0; i < numkeys; i++) {
 	    free(hmac[i]);
@@ -1406,4 +1439,40 @@ void print_longtoc_entry(struct filespec *fs, size_t realsize)
 		else 
 		    fprintf(stderr, "%s %s/%s %5lu %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename);
 	    }
+}
+
+char *strunesc(char *src, char **target)
+{
+    char b;
+    int i = 0, j = 0, k = 0;
+
+    if (*target == NULL)
+        *target = dmalloc(strlen(src) + 1);
+    else if (dmalloc_size(*target) < strlen(src) + 1)
+        *target = drealloc(*target, strlen(src) + 1);
+    (*target)[0] = 0;
+    while (i < strlen(src)) {
+        for (; i < strlen(src) && src[i] != 92; i++)
+            ;
+        memcpyao((void **) target, src + k, i - k, j);
+        j += (i - k);
+        if (i < strlen(src)) {
+            i++;
+            b = (char) strtoln(src + i, NULL, 8, 3);
+            memcpyao((void **) target, &b, 1, j);
+            i += 3;
+            k = i;
+            j += 1;
+        }
+    }
+    memcpyao((void **) target, "\0", 1, j);
+    return(*target);
+}
+
+long int strtoln(char *nptr, char **endptr, int base, int len)
+{
+    char scratch[20];
+    strncpy(scratch, nptr, len);
+    scratch[len] = (char) 0;
+    return(strtol((scratch), endptr, base));
 }
