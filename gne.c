@@ -72,6 +72,7 @@ int mkdir_p(char *pathname, int mode);
 void print_longtoc_entry(struct filespec *fs, size_t realsize);
 char *strunesc(char *src, char **target);
 long int strtoln(char *nptr, char **endptr, int base, int len);
+int help();
 struct dirperms {
     struct dirperms *prev;
     char *filename;
@@ -191,6 +192,7 @@ int getargs(int argc, char **argv)
 	{ "passphrase", required_argument, NULL, 'D' },
 	{ "encryptkey", required_argument, NULL, 'e'},
 	{ "genkey", required_argument, NULL, 'E' },
+	{ "help", no_argument, NULL, 'h' },
 	{ "keycomment", required_argument, NULL, 0 },
 	{ "exclude", required_argument, NULL, 0},
 	{ "one-file-system", no_argument, NULL, 0},
@@ -211,7 +213,7 @@ int getargs(int argc, char **argv)
     args.chdir = NULL;
     args.no_recursion = 0;
     args.absolute_names = 0;
-    while ((optc = getopt_long(argc, argv, "cxtvdT:C:E:f:D:e:", longopts, &longoptidx)) >= 0) {
+    while ((optc = getopt_long(argc, argv, "cxtvhdT:C:E:f:D:e:", longopts, &longoptidx)) >= 0) {
 	switch (optc) {
 	    case 'c':
 		if (args.action != 0) {
@@ -260,6 +262,9 @@ int getargs(int argc, char **argv)
 	    case 'v':
 		args.verbose = 1;
 		break;
+	    case 'h':
+		help();
+		exit(0);
 	    case 'P':
 		args.absolute_names = 1;
 		break;
@@ -1475,4 +1480,65 @@ long int strtoln(char *nptr, char **endptr, int base, int len)
     strncpy(scratch, nptr, len);
     scratch[len] = (char) 0;
     return(strtol((scratch), endptr, base));
+}
+
+int help()
+{
+    printf(
+        "gne - Implementation of tar with public key encryption extensions\n"
+        "\n"
+        "Usage:\n"
+        "  gne [-c | -x | -d | -t] [-f FILE ] [-T FILE] [--exclude PATTERN] [FILE [...]]\n"
+        "      [-v] [-C DIRECTORY] [-P] [--one-file-system]\n"
+        "\n"
+        "  gne -E KEYFILE\n"
+        "\n"
+        "OPTIONS\n"
+        "   Primary arguments\n"
+        "       Specify only one of the following upon command invocation.\n"
+        "\n"
+        "       -c, --create FILE [...]       Creates a new tar archive.\n"
+        "\n"
+        "       -x, --extract [FILE [...]]    Extracts members from a tar archive.\n"
+        "\n"
+        "       -d, --diff [FILE [...]]       Compares  members  from  a tar archive to\n"
+        "                                     files on disk.\n"
+        "\n"
+        "       -t, --list [FILE [...]]       Displays a table of contents of a tar ar‐\n"
+        "                                     chive.\n"
+        "\n"
+        "       -E, --genkey KEYFILE          Generates  a  public  key  encryption key\n"
+        "                                     file\n"
+        "\n"
+        "   Additional arguments\n"
+        "       The following are used in conjunction with one or more of  the  Primary\n"
+        "       options\n"
+        "\n"
+        "       -v, --verbose                 Verbose output\n"
+        "\n"
+        "       -C, --directory DIRECTORY     Changes  to  DIRECTORY  before performing\n"
+        "                                     any operations.\n"
+        "\n"
+        "       -P, --absolute-names          Do not strip  out  leading  \"/\"  on  path\n"
+        "                                     names when extracting archive.\n"
+        "\n"
+        "       --one-file-system             Do not cross mount points.\n"
+        "\n"
+        "       -e, --encryptkey KEYFILE      Encrypt archive members using KEYFILE\n"
+        "\n"
+        "       --keycomment COMMENT          Used  with -E (--genkey), optionally pro‐\n"
+        "                                     vides a comment to  be  recorded  in  the\n"
+        "                                     KEYFILE.\n"
+        "\n"
+        "       --passhprase PASSPHRASE       Optionally  specify  a  passphrase on the\n"
+        "                                     command line.\n"
+        "\n"
+        "       -T, --files-from FILE         Process files from the given FILE instead\n"
+        "                                     of the command line.\n"
+        "\n"
+        "       --exclude PATTERN             Exclude files matching the pattern speci‐\n"
+        "                                     fied by PATTERN.\n"
+        "\n"
+    );
+    return 0;
 }
