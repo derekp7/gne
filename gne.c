@@ -115,6 +115,7 @@ unsigned char **hmac_keys;
 int *hmac_keysz;
 unsigned char **hmac;
 unsigned int *hmac_len = NULL;
+extern char *saved_passwords;
 
 struct prev_link {
     dev_t dev;
@@ -278,7 +279,7 @@ int getargs(int argc, char **argv)
 		strncpya0(&args.passphrase, optarg, 0);
 		break;
 	    case 'e':
-		memcpyao((void **) &args.keyfile, optarg, strlen(optarg), keyfiles_len);
+		memcpyao((void **) &args.keyfile, optarg, strlen(optarg) + 1, keyfiles_len);
 		keyfiles_len += strlen(optarg) + 1;
 		numkeys++;
 		break;
@@ -382,15 +383,20 @@ int create_tar(int argc, char **argv)
     if (numkeys > 0) {
 	for (int i = 0; i < numkeys; i++) {
 	    free(hmac[i]);
+	    free(keys[i].keydata);
+	    EVP_PKEY_free(evp_keypair[i]);
 	}
+	free(hmac_len);
 	free(evp_keypair);
-        free(hmac_len);
 	free(hmac);
 	free(hmac_keys);
 	free(hmac_keysz);
+	free(keys);
     }
     if (args.exclude != NULL)
 	dfree(args.exclude);
+    if (numkeys_string != NULL)
+	dfree(numkeys_string);
     fsfree(&fs);
 #ifdef XATTR
     dfree(tmpxattrn);
@@ -670,9 +676,19 @@ int writeTarEntry(char *filename, struct stat *md)
 	    }
 	    fclose(infile);
 	    if (numkeys > 0) {
+		char paxvar[256];
+		char hmac16[256];
+
 		hmac_finalize_w(hmacf, hmac, hmac_len);
+
 		for (int i = 0; i < numkeys; i++) {
-		    encode_block_16(tsf->hmac[i], hmac[i], hmac_len[i]);
+		    encode_block_16(hmac16, hmac[i], hmac_len[i]);
+		    if (numkeys > 1)
+			sprintf(paxvar, "TC.hmac.%d", i);
+		    else
+			sprintf(paxvar, "TC.hmac");
+		    setpaxvar(&tsf->xheader, &tsf->xheaderlen, paxvar, hmac16, strlen(hmac16));
+
 		}
 		lzop_finalize_w(lzf);
 		rsa_file_finalize(rcf);
@@ -1109,10 +1125,37 @@ int extracttar(int argc, char **argv)
 		fclose(infile);
 
 	    if (args.action != LIST && encoded_tar == 1) {
+		char *in_hmac;
+		char in_hmacvar[256];
 		hmac_finalize_r(hmacf, &hmacp, &hmac_len);
 		encode_block_16(hmac_b64, hmac, hmac_len);
-		if (strcmp((tf_encoding & tf_encoding_ts) != 0 ? (char *) tsf->hmac[keynum] : (char *) in_hmac_b64, (char *) hmac_b64) != 0)
-		    fprintf(stderr, "Warning: HMAC failed verification\n%s\n%s\n%s\n", sanitized_filename, (tf_encoding & tf_encoding_ts) != 0 ? (char *) tsf->hmac[keynum] : (char *) in_hmac_b64, (char *) hmac_b64);
+
+		if ((tf_encoding & tf_encoding_ts) != 0) {
+		    memset(in_hmac_b64, 0, EVP_MAX_MD_SIZE_b64);
+		    if (numkeys > 1) {
+			sprintf(paxhdr_varstring, "TC.hmac.%d", keynum);
+			if (getpaxvar(tsf->xheader, tsf->xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0) {
+			    strncpy((char *) in_hmac_b64, paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
+			    in_hmac_b64[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
+			}
+		    }
+		    else {
+			if (getpaxvar(tsf->xheader, tsf->xheaderlen, "TC.hmac", &paxdata, &paxdatalen) == 0) {
+			    strncpy((char *) in_hmac_b64, paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
+			    in_hmac_b64[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
+			}
+		    }
+		    for (int i = EVP_MAX_MD_SIZE_b64 - 1; i >= 0; i--) {
+			if (in_hmac_b64[i] == '\n') {
+			    in_hmac_b64[i] = '\0';
+			    break;
+			}
+		    }
+		}
+
+//		if (strcmp((tf_encoding & tf_encoding_ts) != 0 ? (char *) tsf->hmac[keynum] : (char *) in_hmac_b64, (char *) hmac_b64) != 0)
+		if (strcmp((char *) in_hmac_b64, (char *) hmac_b64) != 0)
+		    fprintf(stderr, "Warning: HMAC failed verification\n%s\n%s\n%s\n", sanitized_filename, (char *) in_hmac_b64, (char *) hmac_b64);
 		if ((tf_encoding & tf_encoding_compression) != 0)
 		    lzop_finalize_r(lzf);
 		if ((tf_encoding & tf_encoding_cipher) != 0)
@@ -1286,6 +1329,8 @@ int extracttar(int argc, char **argv)
     dfree(required_keys_list);
     dfree(required_keys_str);
     free(dirperms_a);
+    if (saved_passwords != NULL)
+	dfree(saved_passwords);
     if (paxvarlist != NULL)
 	dfree(paxvarlist);
     if (filenamec != NULL)

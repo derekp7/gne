@@ -166,6 +166,10 @@ int tar_get_next_hdr(struct filespec *fs)
 	    tcount = 0;
 	    while (bytestoread - tcount > 0) {
 		count = fs->io_func(fs->xheader + tcount, 1, bytestoread - tcount, fs->io_handle);
+		if (count == 0) {
+		    fprintf(stderr, "End of file reading extended header\n");
+		    exit(1);
+		}
 		tcount += count;
 	    }
 	    tcount = 0;
@@ -619,6 +623,23 @@ int getpaxvarlist(char *paxdata, int paxlen, char **namelist) {
     memcpyao((void **) namelist, "\0", cnamelen, sz);
     sz += 1;
     return(n);
+}
+int catpaxvars(char **outpaxdata, int *outpaxdatalen, char *inpaxdata, int inpaxdatalen)
+{
+    char *inpaxvarlist = NULL;
+    int z;
+    char *paxdata;
+    int paxdatalen;
+
+    z = getpaxvarlist(inpaxdata, inpaxdatalen, &inpaxvarlist);
+    char *p = inpaxvarlist;
+    for (int i = 0; i < z; i++) {
+	getpaxvar(inpaxdata, inpaxdatalen, p, &paxdata, &paxdatalen);
+	setpaxvar(outpaxdata, outpaxdatalen, p, paxdata, paxdatalen - (paxdatalen > 1 && paxdata[paxdatalen - 1] == '\n' ? 1 : 0));
+	p += strlen(p) + 1;
+    }
+    if (inpaxvarlist != NULL)
+	dfree(inpaxvarlist);
 }
 
 int cmpspaxvar(char *paxdata, int paxlen, char *name, char *invalue) {
@@ -1311,13 +1332,6 @@ struct tarsplit_file *tarsplit_init_w(size_t (*c_fwrite)(), void *c_handle, char
     tsf->xheader = dmalloc(100);
     tsf->xheaderlen = 0;
     tsf->tmp_fs = NULL;
-    tsf->hmac = NULL;
-    tsf->hmac = malloc(sizeof(char *) * nk);
-    for (int i = 0; i < nk; i++) {
-	tsf->hmac[i] = malloc(sizeof(char) * EVP_MAX_MD_SIZE * 2 + 1);
-	memset(tsf->hmac[i], 0, EVP_MAX_MD_SIZE * 2 + 1);
-    }
-    tsf->nk = nk;
 
     return tsf;
 }
@@ -1389,30 +1403,14 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
 		fs->filesize = n;
 		fs->ftype = '0';
 		setpaxvar(&(fs->xheader), &(fs->xheaderlen), "TC.segmented.final", "1", 1);
-		if (tsf->nk > 1) {
-		    for (int i = 0; i < tsf->nk; i++) {
-			sprintf(paxhdr_varstring, "TC.hmac.%d", i);
-			setpaxvar(&(fs->xheader), &(fs->xheaderlen), paxhdr_varstring, (char *) tsf->hmac[i], strlen((char *) tsf->hmac[i]));
-		    }
-		}
-		else {
-		    setpaxvar(&(fs->xheader), &(fs->xheaderlen), "TC.hmac", (char *) tsf->hmac[0], strlen((char *) tsf->hmac[0]));
-		}
+		catpaxvars(&(fs->xheader), &(fs->xheaderlen), tsf->xheader, tsf->xheaderlen);
 		tar_write_next_hdr(fs);
 		fsclear(fs);
 	    }
 	    else {
 		sprintf(paxdata, "%llu", tsf->orig_fs->filesize);
 		setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.original.size", paxdata, strlen(paxdata));
-		if (tsf->nk > 1) {
-		    for (int i = 0; i < tsf->nk; i++) {
-			sprintf(paxhdr_varstring, "TC.hmac.%d", i);
-			setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), paxhdr_varstring, (char *) tsf->hmac[i], strlen((char *) tsf->hmac[i]));
-		    }
-		}
-		else  {
-		    setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.hmac", (char *) tsf->hmac[0], strlen((char *) tsf->hmac[0]));
-		}
+		catpaxvars(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), tsf->xheader, tsf->xheaderlen);
 		tsf->orig_fs->filesize = n;
 		tar_write_next_hdr(tsf->orig_fs);
 	    }
@@ -1434,9 +1432,6 @@ int tarsplit_finalize_w(struct tarsplit_file *tsf)
     dfree(tsf->xheader);
     fsfree(tsf->tmp_fs);
     free(tsf->tmp_fs);
-    for (int i = 0; i < tsf->nk; i++)
-	free(tsf->hmac[i]);
-    free(tsf->hmac);
     free(tsf);
     return(0);
 }
@@ -1452,9 +1447,8 @@ int tarsplit_finalize_r(struct tarsplit_file *tsf)
     }
     fsfree(tsf->tmp_fs);
     free(tsf->tmp_fs);
-    for (int i = 0; i < tsf->nk; i++)
-	free(tsf->hmac[i]);
-    free(tsf->hmac);
+    if (tsf->xheader != NULL)
+	dfree(tsf->xheader);
     free(tsf);
     return(0);
 }
@@ -1471,12 +1465,8 @@ struct tarsplit_file *tarsplit_init_r(size_t (*c_fread)(), void *c_handle, int n
     tsf->segremaining = 0;
     tsf->segsize = 0;
     tsf->tmp_fs = NULL;
-    tsf->hmac = malloc(sizeof(char *) * nk);
-    for (int i = 0; i < nk; i++) {
-	tsf->hmac[i] = malloc(sizeof(char) * EVP_MAX_MD_SIZE_b64);
-	memset(tsf->hmac[i], 0, EVP_MAX_MD_SIZE_b64);
-    }
-    tsf->nk = nk;
+    tsf->xheader = dmalloc(100);
+    tsf->xheaderlen = 0;
     return tsf;
 }
 
@@ -1511,35 +1501,7 @@ size_t tarsplit_read(void *buf, size_t sz, size_t count, struct tarsplit_file *t
 		tar_get_next_hdr(fs);
 		if (getpaxvar(fs->xheader, fs->xheaderlen, "TC.segmented.final", &paxdata, &paxdatalen) == 0) {
 		    tsf->finalseg = atoi(paxdata);
-		}
-                if (tsf->nk > 1) {
-		    for (int i = 0; i < tsf->nk; i++) {
-			sprintf(paxhdr_varstring, "TC.hmac.%d", i);
-			if (getpaxvar(fs->xheader, fs->xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0) {
-			    memset(tsf->hmac[i], 0, EVP_MAX_MD_SIZE_b64 - 1);
-			    strncpy((char *) tsf->hmac[i], paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
-			    (tsf->hmac[i])[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
-			    for (int j = EVP_MAX_MD_SIZE_b64 - 1; j >= 0; j--) {
-				if ((tsf->hmac[i])[j] == '\n') {
-				    (tsf->hmac[i])[j] = '\0';
-				    break;
-				}
-			    }
-			}
-		    }
-                }
-                else {
-		    if (getpaxvar(fs->xheader, fs->xheaderlen, "TC.hmac", &paxdata, &paxdatalen) == 0) {
-			memset(tsf->hmac[0], 0, EVP_MAX_MD_SIZE_b64 - 1);
-			strncpy((char *) tsf->hmac[0], paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
-			(tsf->hmac[0])[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
-			for (int j = EVP_MAX_MD_SIZE_b64 - 1; j >= 0; j--) {
-			    if ((tsf->hmac[0])[j] == '\n') {
-				(tsf->hmac[0])[j] = '\0';
-				break;
-			    }
-			}
-		    }
+		    catpaxvars(&(tsf->xheader), &(tsf->xheaderlen), fs->xheader, fs->xheaderlen);
 		}
 		tsf->segsize = tsf->segremaining = fs->filesize;
 	    }

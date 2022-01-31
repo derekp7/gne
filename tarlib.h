@@ -159,8 +159,6 @@ struct tarsplit_file {
     struct filespec *tmp_fs;
     char *xheader;
     int xheaderlen;
-    int nk;
-    unsigned char **hmac;
     char mode;
 };
 
@@ -235,6 +233,7 @@ int cmpspaxvar(char *paxdata, int paxlen, char *name, char *invalue);
 int setpaxvar(char **paxdata, int *paxlen, char *inname, char *invalue, int invaluelen);
 int delpaxvar(char **paxdata, int *paxlen, char *inname);
 int cpypaxvarstr(char *paxdata, int paxlen, char *name, char **target);
+int catpaxvars(char **outpaxdata, int *outpaxdatalen, char *inpaxdata, int inpaxdatalen);
 unsigned int ilog10(unsigned long long int n);
 char *ulli2g(unsigned long long int v, char *p);
 unsigned long long int g2ulli(char *p);
