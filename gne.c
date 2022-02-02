@@ -60,13 +60,15 @@ static char *tmpxattrn = NULL;
 #endif
 int create_tar(int argc, char **argv);
 int extracttar(int argc, char **argv);
-int writeTarEntry(char *filename, struct stat *md);
+int writeTarEntry(char *filename, struct stat *md, FILE *handle);
 static int call_tar(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftwbuf);
 int getargs(int argc, char **argv);
 int writeGlobalHdr();
 char *itoa(char *s, int n);
 FILE *open_file(char *filename);
 char *sanitize_filename(char *inname);
+void vf_arg_process(char *optarg);
+void create_tar_vf();
 void *usage();
 int mkdir_p(char *pathname, int mode);
 void print_longtoc_entry(struct filespec *fs, size_t realsize);
@@ -76,8 +78,8 @@ int help();
 struct dirperms {
     struct dirperms *prev;
     char *filename;
-    int uid;
-    int gid;
+    uid_t uid;
+    gid_t gid;
     int mode;
     struct utimbuf tm;
 };
@@ -87,6 +89,14 @@ int dirperms_cmp(const void *p1, const void *p2);
 #define LIST 3
 #define DIFF 4
 #define GENKEY 5
+struct vf {
+    char *filepath;
+    char *prog;
+    int perms;
+    uid_t uid;
+    gid_t gid;
+};
+
 struct {
     int action;
     char *filename;
@@ -102,11 +112,13 @@ struct {
     int no_cross_fs;
     int no_recursion;
     int absolute_names;
+    struct vf *vf;
 } args;
 int numkeys = 0;
 char *numkeys_string = NULL;
 int keyfiles_len = 0;
 int numexclude = 0;
+int num_vf = 0;
 int exclude_len = 0;
 struct key_st *keys;
 
@@ -196,6 +208,7 @@ int getargs(int argc, char **argv)
 	{ "help", no_argument, NULL, 'h' },
 	{ "keycomment", required_argument, NULL, 0 },
 	{ "exclude", required_argument, NULL, 0},
+	{ "virtual-file", required_argument, NULL, 0},
 	{ "one-file-system", no_argument, NULL, 0},
 	{ "no-recursion", no_argument, NULL, 0},
 	{ NULL, no_argument, NULL, 0 }
@@ -214,6 +227,8 @@ int getargs(int argc, char **argv)
     args.chdir = NULL;
     args.no_recursion = 0;
     args.absolute_names = 0;
+    args.vf = NULL;
+
     while ((optc = getopt_long(argc, argv, "cxtvhdT:C:E:f:D:e:", longopts, &longoptidx)) >= 0) {
 	switch (optc) {
 	    case 'c':
@@ -308,6 +323,9 @@ int getargs(int argc, char **argv)
 		if (strcmp("no-recursion", longopts[longoptidx].name) == 0) {
 		    args.no_recursion = 1;
 		}
+		if (strcmp("virtual-file", longopts[longoptidx].name) == 0) {
+		    vf_arg_process(optarg);
+		}
 		break;
 	    default:
 		usage();
@@ -322,6 +340,97 @@ void *usage()
     return(0);
 }
 
+void vf_arg_process(char *optarg)
+{
+    char *c;
+    int n;
+    char *filepath;
+    char *prog;
+    char *op;
+    char **oplist = NULL;
+    struct vf tmpvf;
+    struct passwd *pw;
+    struct group *gr;
+
+    tmpvf.filepath = NULL;
+    tmpvf.prog = NULL;
+    tmpvf.perms = 0400;
+    tmpvf.uid = getuid();
+    tmpvf.gid = (int) getgid();
+    if (! (c = strchr(optarg, '='))) {
+	fprintf(stderr, "Error in virtual-file specification, no '=' detected\n");
+	exit(1);
+    }
+    filepath = optarg;
+    *c = '\0';
+    prog = c + 1;
+
+    if ((c = strchr(filepath, '['))) {
+	if (filepath[strlen(filepath) - 1] != ']') {
+	    fprintf(stderr, "Error in virtual-file specification, '[]' not  matched\n");
+	    exit(1);
+	}
+	filepath[strlen(filepath) - 1] = '\0';
+	*c = '\0';
+	op = c + 1;
+	n = parse(op, &oplist, ',');
+	fflush(stderr);
+	if (n > 0)
+	    tmpvf.perms = strtol(oplist[0], 0, 8);
+	if (n > 1) {
+	    pw=getpwnam(oplist[1]);
+	    if (pw != NULL)
+		tmpvf.uid = pw->pw_uid;
+	}
+	if (n > 2) {
+	    gr=getgrnam(oplist[2]);
+	    if (gr != NULL)
+		tmpvf.gid = gr->gr_gid;
+	}
+    }
+    strncpya0(&tmpvf.filepath, filepath, 0);
+    strncpya0(&tmpvf.prog, prog, 0);
+    memcpyao((void **) &args.vf, &tmpvf, sizeof(tmpvf), num_vf++);
+
+    return;
+}
+
+void create_tar_vf()
+{
+    struct stat sb;
+    int p[2];
+    FILE *f;
+
+    for (int i = 0; i < num_vf; i++) {
+	sb.st_dev = 0;
+	sb.st_ino = 0;
+	sb.st_mode = args.vf[i].perms;
+	sb.st_uid = args.vf[i].uid;
+	sb.st_gid = args.vf[i].gid;
+	sb.st_size = 0;
+	sb.st_blksize = 0;
+	sb.st_blocks = 0;
+	sb.st_mtim.tv_sec = time(NULL);
+	sb.st_mtim.tv_nsec = 0;
+	sb.st_ctim.tv_sec = sb.st_mtim.tv_sec;
+	sb.st_ctim.tv_nsec = 0;
+	sb.st_atim.tv_sec = sb.st_mtim.tv_sec;
+	sb.st_atim.tv_nsec = 0;
+	pipe(p);
+	if (fork() == 0) {
+	    dup2(p[1], 1);
+	    close(p[0]);
+	    close(p[1]);
+	    execl("/bin/sh", "sh", "-c", args.vf[i].prog, NULL);
+	    exit(0);
+	}
+	close(p[1]);
+	f = fdopen(p[0], "r");
+	writeTarEntry(args.vf[i].filepath, &sb, f);
+    }
+    return;
+}
+
 int create_tar(int argc, char **argv)
 {
     int nftw_flags = 0;
@@ -331,7 +440,7 @@ int create_tar(int argc, char **argv)
     char *fntextu = NULL;
     size_t fnalloc = 0;
 
-    if (args.filename != NULL) {
+    if (args.filename != NULL && strcmp(args.filename, "-") != 0) {
 	args.io_func = fwrite;
 	if ((args.io_handle = fopen(args.filename, "w")) == NULL) {
 	    fprintf(stderr, "Error opening %s\n", args.filename);
@@ -344,6 +453,8 @@ int create_tar(int argc, char **argv)
     }
     if (args.keyfile != NULL)
 	writeGlobalHdr();
+    if (args.vf != NULL)
+	create_tar_vf();
     nftw_flags |= FTW_PHYS;
     if (args.files_from != NULL) {
 	ffh = fopen(args.files_from, "r");
@@ -421,7 +532,7 @@ int call_tar(const char *fpath, const struct stat *sb, int tflag, struct FTW *ft
     }
 
     if (exclude_this_file == 0)
-	writeTarEntry((char *) fpath, (struct stat *) sb);
+	writeTarEntry((char *) fpath, (struct stat *) sb, NULL);
     return(0);
 }
 
@@ -512,7 +623,7 @@ int writeGlobalHdr()
 }
 
 // Creates a tar entry
-int writeTarEntry(char *filename, struct stat *md)
+int writeTarEntry(char *filename, struct stat *md, FILE *handle)
 {
     struct passwd *pwent;
     struct group *grent;
@@ -547,47 +658,66 @@ int writeTarEntry(char *filename, struct stat *md)
 
     strncpya0(&(fs.filename), filename, 0);
 
-    if ((md->st_mode & S_IFMT) == S_IFREG && md->st_nlink > 1) {
-	if ((prev_link = get_prev_link(md->st_dev, md->st_ino)) != NULL) {
-	    fs.ftype = '1';
-	    strncpya0(&(fs.linktarget), prev_link->filename, 0);
-	    tar_write_next_hdr(&fs);
-	    return(0);
+    if (handle == NULL) {
+	if ((md->st_mode & S_IFMT) == S_IFREG && md->st_nlink > 1) {
+	    if ((prev_link = get_prev_link(md->st_dev, md->st_ino)) != NULL) {
+		fs.ftype = '1';
+		strncpya0(&(fs.linktarget), prev_link->filename, 0);
+		tar_write_next_hdr(&fs);
+		return(0);
+	    }
+	    else
+		set_prev_link(md->st_dev, md->st_ino, filename);
+	}
+	switch (md->st_mode & S_IFMT) {
+	    case S_IFREG: fs.ftype = '0'; break;
+	    case S_IFDIR: fs.ftype = '5'; break;
+	    case S_IFLNK:
+		fs.ftype = '2';
+		char linkpath[4096];
+		size_t llen;
+		llen = readlink(filename, linkpath, 4095);
+		linkpath[llen >= 0 ? llen : 0] = 0;
+		strncpya0(&(fs.linktarget), linkpath, 0);
+		break;
+	    default:
+		fs.ftype = '0';
+	}
+
+	if (fs.ftype == '0') {
+	    fs.filesize = md->st_size;
 	}
 	else
-	    set_prev_link(md->st_dev, md->st_ino, filename);
-    }
-    fs.mode = md->st_mode & 07777;
-    switch (md->st_mode & S_IFMT) {
-	case S_IFREG: fs.ftype = '0'; break;
-	case S_IFDIR: fs.ftype = '5'; break;
-	case S_IFLNK:
-	    fs.ftype = '2';
-	    char linkpath[4096];
-	    size_t llen;
-	    llen = readlink(filename, linkpath, 4095);
-	    linkpath[llen >= 0 ? llen : 0] = 0;
-	    strncpya0(&(fs.linktarget), linkpath, 0);
-	    break;
-	default:
-	    fs.ftype = '0';
-    }
+	    fs.filesize = 0;
+	fs.modtime = md->st_mtime;
+	sprintf(tmptime, "%ld.%.9ld", md->st_mtime, md->st_mtimensec);
+	setpaxvar(&fs.xheader, &fs.xheaderlen, "mtime", tmptime, strlen(tmptime));
+	sprintf(tmptime, "%ld.%.9ld", md->st_atime, md->st_atimensec);
+	setpaxvar(&fs.xheader, &fs.xheaderlen, "atime", tmptime, strlen(tmptime));
+	sprintf(tmptime, "%ld.%.9ld", md->st_ctime, md->st_ctimensec);
+	setpaxvar(&fs.xheader, &fs.xheaderlen, "ctime", tmptime, strlen(tmptime));
 
-    if (fs.ftype == '0') {
-	fs.filesize = md->st_size;
-
+#ifdef XATTR
+	memset(xattrv, 0, 1025);
+	memset(xattrs, 0, 1025);
+	nxattrs = llistxattr(filename, xattrs, 1024);
+	xattrsp = xattrs;
+	for (int i = 0; nxattrs > 0; i++) {
+	    szxattrv = lgetxattr(filename, xattrsp, xattrv, 1024);
+	    strncpya0(&tmpxattrn, "SCHILY.xattr.", 0);
+	    strcata(&tmpxattrn, xattrsp);
+	    setpaxvar(&(fs.xheader), &(fs.xheaderlen), tmpxattrn, xattrv, szxattrv);
+	    nxattrs -= (strlen(xattrsp) + 1);
+	    xattrsp += strlen(xattrsp) + 1;
+	}
+#endif
     }
-    else
-	fs.filesize = 0;
+    else {
+	fs.ftype = '0';
+    }
     fs.nuid = md->st_uid;
     fs.ngid = md->st_gid;
-    fs.modtime = md->st_mtime;
-    sprintf(tmptime, "%ld.%.9ld", md->st_mtime, md->st_mtimensec);
-    setpaxvar(&fs.xheader, &fs.xheaderlen, "mtime", tmptime, strlen(tmptime));
-    sprintf(tmptime, "%ld.%.9ld", md->st_atime, md->st_atimensec);
-    setpaxvar(&fs.xheader, &fs.xheaderlen, "atime", tmptime, strlen(tmptime));
-    sprintf(tmptime, "%ld.%.9ld", md->st_ctime, md->st_ctimensec);
-    setpaxvar(&fs.xheader, &fs.xheaderlen, "ctime", tmptime, strlen(tmptime));
+    fs.mode = md->st_mode & 07777;
 
     if (cached_uid >= 0 && md->st_uid == cached_uid) {
 	strncpy(fs.auid, cached_uname, 32);
@@ -611,78 +741,95 @@ int writeTarEntry(char *filename, struct stat *md)
 	    cached_gid = md->st_gid;
 	}
     }
-#ifdef XATTR
-    memset(xattrv, 0, 1025);
-    memset(xattrs, 0, 1025);
-    nxattrs = llistxattr(filename, xattrs, 1024);
-    xattrsp = xattrs;
-    for (int i = 0; nxattrs > 0; i++) {
-	szxattrv = lgetxattr(filename, xattrsp, xattrv, 1024);
-	strncpya0(&tmpxattrn, "SCHILY.xattr.", 0);
-	strcata(&tmpxattrn, xattrsp);
-	setpaxvar(&(fs.xheader), &(fs.xheaderlen), tmpxattrn, xattrv, szxattrv);
-	nxattrs -= (strlen(xattrsp) + 1);
-	xattrsp += strlen(xattrsp) + 1;
-    }
-#endif
     if (args.verbose == 1) {
 	fprintf(stderr, "%s\n", fs.filename);
     }
     if (fs.ftype == '0') {
 
-	FILE *infile = fopen(filename, "r");
+	FILE *infile;
+	size_t bytesread = 0;
+	if (handle == NULL)
+	    infile = fopen(filename, "r");
+	else {
+	    infile = handle;
+	}
 	if (infile == 0) {
 	    fprintf(stderr, "Error opening file %s\n", filename);
+	    return(0);
+	}
+	if (numkeys > 0) {
+	    char paxdata[64];
+	    setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.compression", "lzop", 4);
+	    setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.cipher", "rsa-aes256-ctr", 14);
+	    if (numkeys_string != NULL)
+		setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.keygroup", numkeys_string, strlen(numkeys_string));
+	    tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, 1024 * 1024, &fs);
+	    sprintf(paxdata, "%zd", md->st_size);
+	    if (handle == NULL)
+		setpaxvar(&tsf->xheader, &tsf->xheaderlen, "TC.original.size", paxdata, strlen(paxdata));
+	    rcf = rsa_file_init('w', evp_keypair, numkeys, tarsplit_write, tsf);
+	    lzf = lzop_init_w(rsa_write, rcf);
+	    hmacf = hmac_file_init_w(lzop_write, lzf, hmac_keys, hmac_keysz, numkeys);
+	    fwrite_func = hmac_file_write;
+	    fwrite_handle = hmacf;
 	}
 	else {
-	    if (numkeys > 0) {
-		setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.compression", "lzop", 4);
-		setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.cipher", "rsa-aes256-ctr", 14);
-		if (numkeys_string != NULL)
-		    setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.keygroup", numkeys_string, strlen(numkeys_string));
-		tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, 1024 * 1024, &fs, numkeys);
-		rcf = rsa_file_init('w', evp_keypair, numkeys, tarsplit_write, tsf);
-		lzf = lzop_init_w(rsa_write, rcf);
-		hmacf = hmac_file_init_w(lzop_write, lzf, hmac_keys, hmac_keysz, numkeys);
-		fwrite_func = hmac_file_write;
-		fwrite_handle = hmacf;
+	    if (handle != NULL) {
+		tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, 1024 * 1024, &fs);
+		fwrite_func = tarsplit_write;
+		fwrite_handle = tsf;
 	    }
 	    else {
 		fwrite_func = fs.io_func;
 		fwrite_handle = fs.io_handle;
 		tar_write_next_hdr(&fs);
 	    }
-	    size_t bytestoread = 0;
-	    if ((md->st_mode & S_IFMT) == S_IFREG)
-		bytestoread = md->st_size;
-	    else
-		bytestoread = 0;
-	    int blockpad = 512 - ((bytestoread - 1) % 512 + 1);
+	}
+	size_t bytestoread = 0;
+	if ((md->st_mode & S_IFMT) == S_IFREG)
+	    bytestoread = md->st_size;
+	else
+	    bytestoread = 0;
+	int blockpad = 512 - ((bytestoread - 1) % 512 + 1);
+
+	if (handle != NULL) {
+	    size_t c;
+	    while ((c = fread(buf, 1, 512, infile))) {
+		fwrite_func(buf, 1, c, fwrite_handle);
+		bytesread += c;
+	    }
+
+	}
+	else {
 	    while (bytestoread > 0) {
 		size_t c;
 		c = fread(buf, 1, bytestoread > 512 ? 512 : bytestoread, infile);
-		if (c == 0)
+		if (c == 0) {
 		    break;
+		}
 		fwrite_func(buf, 1, c, fwrite_handle);
 		bytestoread -= c;
+		bytesread += c;
 	    }
-	    memset(buf, 0, 512);
-	    if (bytestoread > 0) {
-		fprintf(stderr, "Short read on %s, buffering with nulls\n", filename);
-		while (bytestoread > 0) {
-		    fwrite_func(buf, 1, bytestoread > 512 ? 512 : bytestoread, fwrite_handle);
-		    bytestoread -= (bytestoread > 512 ? 512 : bytestoread);
-		}
+	}
+	memset(buf, 0, 512);
+	if (bytestoread > 0) {
+	    fprintf(stderr, "Short read on %s, buffering with nulls\n", filename);
+	    while (bytestoread > 0) {
+		fwrite_func(buf, 1, bytestoread > 512 ? 512 : bytestoread, fwrite_handle);
+		bytestoread -= (bytestoread > 512 ? 512 : bytestoread);
 	    }
-	    fclose(infile);
-	    if (numkeys > 0) {
-		char paxvar[256];
-		char hmac16[256];
+	}
+	fclose(infile);
+	if (tsf != NULL) {
+	    char paxvar[256];
+	    char hmac16[256];
 
+	    if (hmacf != NULL) {
 		hmac_finalize_w(hmacf, hmac, hmac_len);
 
 		for (int i = 0; i < numkeys; i++) {
-		    encode_block_16(hmac16, hmac[i], hmac_len[i]);
+		    encode_block_16((unsigned char *) hmac16, hmac[i], hmac_len[i]);
 		    if (numkeys > 1)
 			sprintf(paxvar, "TC.hmac.%d", i);
 		    else
@@ -690,13 +837,20 @@ int writeTarEntry(char *filename, struct stat *md)
 		    setpaxvar(&tsf->xheader, &tsf->xheaderlen, paxvar, hmac16, strlen(hmac16));
 
 		}
+	    }
+	    if (lzf != NULL)
 		lzop_finalize_w(lzf);
+	    if (rcf != NULL)
 		rsa_file_finalize(rcf);
-		tarsplit_finalize_w(tsf);
+	    if (handle != NULL) {
+		char paxdata[64];
+		sprintf(paxdata, "%zd", bytesread);
+		setpaxvar(&tsf->xheader, &tsf->xheaderlen, "TC.original.size", paxdata, strlen(paxdata));
 	    }
-	    else {
-		fs.io_func(buf, 1, blockpad, fs.io_handle);
-	    }
+	    tarsplit_finalize_w(tsf);
+	}
+	else {
+	    fs.io_func(buf, 1, blockpad, fs.io_handle);
 	}
     }
     else {
@@ -733,8 +887,8 @@ int extracttar(int argc, char **argv)
     struct lzop_file *lzf = NULL;
     struct rsa_file *rcf = NULL;
     struct hmac_file *hmacf = NULL;
-    char *paxdata;
-    int paxdatalen;
+    static char *paxdata = NULL;
+    int paxdatalen = 0;
     EVP_PKEY *evp_keypair = NULL;
     struct rsa_keys *rsa_keys = NULL;
     char *cur_fp = NULL;
@@ -915,6 +1069,8 @@ int extracttar(int argc, char **argv)
 	    continue;
 	}
 	else if(fs.ftype == '0' || (has_segmented_header = getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen)) == 0) {
+	    int differed_original_size = 0;
+	    size_t original_size = 0;
 	    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen) == 0 ||
 		getpaxvar(fs.xheader, fs.xheaderlen, "TC.cipher", &paxdata, &paxdatalen) == 0 ||
 		getpaxvar(fs.xheader, fs.xheaderlen, "TC.compression", &paxdata, &paxdatalen) == 0) {
@@ -927,12 +1083,11 @@ int extracttar(int argc, char **argv)
 		    sizeremaining = strtoull(paxdata, 0, 10);
 		}
 		else {
-		    fprintf(stderr, "Error -- missing original size xheader\n");
-		    exit(1);
+		    differed_original_size = 1;
 		}
 
 		if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.segmented.header", &paxdata, &paxdatalen) == 0) {
-		    tsf = tarsplit_init_r(next_c_fread, next_c_read_handle, numkeys);
+		    tsf = tarsplit_init_r(next_c_fread, next_c_read_handle);
 		    next_c_fread = tarsplit_read;
 		    next_c_read_handle = tsf;
 		    tf_encoding |= tf_encoding_ts;
@@ -1001,7 +1156,7 @@ int extracttar(int argc, char **argv)
 		    next_c_read_handle = lzf;
 		    tf_encoding |= tf_encoding_compression;
 		}
-		if (args.action != LIST) {
+		if (args.action != LIST && ((tf_encoding & tf_encoding_cipher) != 0)) {
 		    hmac_keys = rsa_keys->keys[keynum].hmac_key;
 		    hmacf = hmac_file_init_r(next_c_fread, next_c_read_handle, &hmac_keys, &hmac_keysz, 1);
 		    next_c_fread = hmac_file_read;
@@ -1016,8 +1171,10 @@ int extracttar(int argc, char **argv)
 	    }
 
 
-	    if (args.verbose == 1 && extract_this_file == 1)
-		print_longtoc_entry(&fs, sizeremaining);
+	    if (args.verbose == 1 && extract_this_file == 1) {
+		if (sizeremaining != 0)
+		    print_longtoc_entry(&fs, sizeremaining);
+	    }
 	    else if (extract_this_file == 1 && args.action == LIST)
 		printf("%s\n", fs.filename);
 
@@ -1074,27 +1231,43 @@ int extracttar(int argc, char **argv)
 		    infile = fopen(sanitized_filename, "r");
 		}
 	    }
-	    while (sizeremaining > 0 || (args.action == LIST && encoded_tar == 1)) {
-		c = next_c_fread(databuf, 1, sizeremaining < bufsize ? sizeremaining : bufsize, next_c_read_handle);
-		if (args.action == EXTRACT && outfile != NULL)
-		    fwrite(databuf, 1, c, outfile);
-		else if (args.action == DIFF && infile != NULL) {
-		    fread(databuf2, 1, c, infile);
-		    if (memcmp(databuf, databuf2, c) != 0) {
-			fclose(infile);
-			infile = NULL;
-			fprintf(stderr, "%s differs\n", sanitized_filename);
+	    if (sizeremaining == 0 && encoded_tar == 1) {
+		while ((c = next_c_fread(databuf, 1, bufsize, next_c_read_handle))) {
+		    if (args.action == EXTRACT && outfile != NULL)
+			fwrite(databuf, 1, c, outfile);
+		    else if (args.action == DIFF && infile != NULL) {
+			fread(databuf2, 1, c, infile);
+			if (memcmp(databuf, databuf2, c) != 0) {
+			    fclose(infile);
+			    infile = NULL;
+			    fprintf(stderr, "%s differs\n", sanitized_filename);
+			}
 		    }
 		}
-		if (args.action != LIST || encoded_tar == 0) {
-		    sizeremaining -= c;
-		    if (sizeremaining > 0 && c == 0) {
-			fprintf(stderr, "Problem reading input, aborting.\n");
-			exit(1);
+	    }
+	    else {
+		while (sizeremaining > 0 || (args.action == LIST && encoded_tar == 1)) {
+		    c = next_c_fread(databuf, 1, sizeremaining < bufsize ? sizeremaining : bufsize, next_c_read_handle);
+		    if (args.action == EXTRACT && outfile != NULL)
+			fwrite(databuf, 1, c, outfile);
+		    else if (args.action == DIFF && infile != NULL) {
+			fread(databuf2, 1, c, infile);
+			if (memcmp(databuf, databuf2, c) != 0) {
+			    fclose(infile);
+			    infile = NULL;
+			    fprintf(stderr, "%s differs\n", sanitized_filename);
+			}
 		    }
+		    if (args.action != LIST || encoded_tar == 0) {
+			sizeremaining -= c;
+			if (sizeremaining > 0 && c == 0) {
+			    fprintf(stderr, "Problem reading input, aborting.\n");
+			    exit(1);
+			}
+		    }
+		    else if (c <= 0)
+			break;
 		}
-		else if (c <= 0)
-		    break;
 	    }
 	    if (encoded_tar == 0 && padding > 0) {
 		c = next_c_fread(padblock, 1, padding, next_c_read_handle);
@@ -1124,49 +1297,46 @@ int extracttar(int argc, char **argv)
 	    if (infile != NULL)
 		fclose(infile);
 
-	    if (args.action != LIST && encoded_tar == 1) {
-		char *in_hmac;
-		char in_hmacvar[256];
+	    if (hmacf != NULL) {
 		hmac_finalize_r(hmacf, &hmacp, &hmac_len);
 		encode_block_16(hmac_b64, hmac, hmac_len);
-
-		if ((tf_encoding & tf_encoding_ts) != 0) {
-		    memset(in_hmac_b64, 0, EVP_MAX_MD_SIZE_b64);
-		    if (numkeys > 1) {
-			sprintf(paxhdr_varstring, "TC.hmac.%d", keynum);
-			if (getpaxvar(tsf->xheader, tsf->xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0) {
-			    strncpy((char *) in_hmac_b64, paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
-			    in_hmac_b64[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
-			}
+		memset(in_hmac_b64, 0, EVP_MAX_MD_SIZE_b64);
+		if (numkeys > 1) {
+		    sprintf(paxhdr_varstring, "TC.hmac.%d", keynum);
+		    if (getpaxvar(tsf != NULL ? tsf->xheader: fs.xheader, tsf != NULL ? tsf->xheaderlen : fs.xheaderlen, paxhdr_varstring, &paxdata, &paxdatalen) == 0) {
+			strncpy((char *) in_hmac_b64, paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
+			in_hmac_b64[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
 		    }
-		    else {
-			if (getpaxvar(tsf->xheader, tsf->xheaderlen, "TC.hmac", &paxdata, &paxdatalen) == 0) {
-			    strncpy((char *) in_hmac_b64, paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
-			    in_hmac_b64[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
-			}
+		}
+		else {
+		    if (getpaxvar(tsf != NULL ? tsf->xheader : fs.xheader, tsf != NULL ? tsf->xheaderlen : fs.xheaderlen, "TC.hmac", &paxdata, &paxdatalen) == 0) {
+			strncpy((char *) in_hmac_b64, paxdata, paxdatalen > EVP_MAX_MD_SIZE_b64 - 1 ? EVP_MAX_MD_SIZE_b64 - 1 : paxdatalen);
+			in_hmac_b64[EVP_MAX_MD_SIZE_b64 - 1] = '\0';
 		    }
-		    for (int i = EVP_MAX_MD_SIZE_b64 - 1; i >= 0; i--) {
-			if (in_hmac_b64[i] == '\n') {
-			    in_hmac_b64[i] = '\0';
-			    break;
-			}
+		}
+		for (int i = EVP_MAX_MD_SIZE_b64 - 1; i >= 0; i--) {
+		    if (in_hmac_b64[i] == '\n') {
+			in_hmac_b64[i] = '\0';
+			break;
 		    }
 		}
 
-//		if (strcmp((tf_encoding & tf_encoding_ts) != 0 ? (char *) tsf->hmac[keynum] : (char *) in_hmac_b64, (char *) hmac_b64) != 0)
 		if (strcmp((char *) in_hmac_b64, (char *) hmac_b64) != 0)
 		    fprintf(stderr, "Warning: HMAC failed verification\n%s\n%s\n%s\n", sanitized_filename, (char *) in_hmac_b64, (char *) hmac_b64);
-		if ((tf_encoding & tf_encoding_compression) != 0)
-		    lzop_finalize_r(lzf);
-		if ((tf_encoding & tf_encoding_cipher) != 0)
-		    rsa_file_finalize(rcf);
-		if ((tf_encoding & tf_encoding_ts) != 0) {
-		    tarsplit_finalize_r(tsf);
-		}
-		if ((tf_encoding & tf_encoding_tmr) != 0)
-		    tar_maxread_finalize(tmr);
-		tf_encoding = 0;
 	    }
+	    if (lzf != NULL)
+		lzop_finalize_r(lzf);
+	    if (rcf != NULL)
+		rsa_file_finalize(rcf);
+	    if (tsf != NULL) {
+		if (getpaxvar(tsf->xheader, tsf->xheaderlen, "TC.original.size", &paxdata, &paxdatalen) == 0)
+		    original_size = strtoull(paxdata, 0, 10);
+		tarsplit_finalize_r(tsf);
+	    }
+
+	    if (differed_original_size == 1)
+		print_longtoc_entry(&fs, original_size);
+
 	}
 	else if (fs.ftype == '5') {
             if (args.verbose == 1 && extract_this_file == 1)
@@ -1546,44 +1716,51 @@ int help()
         "\n"
         "       -x, --extract [FILE [...]]    Extracts members from a tar archive.\n"
         "\n"
-        "       -d, --diff [FILE [...]]       Compares  members  from  a tar archive to\n"
+        "       -d, --diff [FILE [...]]       Compares members from a tar archive to\n"
         "                                     files on disk.\n"
         "\n"
-        "       -t, --list [FILE [...]]       Displays a table of contents of a tar ar‐\n"
-        "                                     chive.\n"
+        "       -t, --list [FILE [...]]       Displays a table of contents of a tar\n"
+        "                                     archive.\n"
         "\n"
-        "       -E, --genkey KEYFILE          Generates  a  public  key  encryption key\n"
+        "       -E, --genkey KEYFILE          Generates a public key encryption key\n"
         "                                     file\n"
         "\n"
         "   Additional arguments\n"
-        "       The following are used in conjunction with one or more of  the  Primary\n"
+        "       The following are used in conjunction with one or more of the Primary\n"
         "       options\n"
         "\n"
         "       -v, --verbose                 Verbose output\n"
         "\n"
-        "       -C, --directory DIRECTORY     Changes  to  DIRECTORY  before performing\n"
+        "       -C, --directory DIRECTORY     Changes to DIRECTORY before performing\n"
         "                                     any operations.\n"
         "\n"
-        "       -P, --absolute-names          Do not strip  out  leading  \"/\"  on  path\n"
+        "       -P, --absolute-names          Do not strip out leading \"/\" on path\n"
         "                                     names when extracting archive.\n"
         "\n"
         "       --one-file-system             Do not cross mount points.\n"
         "\n"
         "       -e, --encryptkey KEYFILE      Encrypt archive members using KEYFILE\n"
         "\n"
-        "       --keycomment COMMENT          Used  with -E (--genkey), optionally pro‐\n"
-        "                                     vides a comment to  be  recorded  in  the\n"
+        "       --keycomment COMMENT          Used with -E (--genkey), optionally\n"
+        "                                     provides a comment to be recorded in the\n"
         "                                     KEYFILE.\n"
         "\n"
-        "       --passhprase PASSPHRASE       Optionally  specify  a  passphrase on the\n"
+        "       --passhprase PASSPHRASE       Optionally specify a passphrase on the\n"
         "                                     command line.\n"
         "\n"
         "       -T, --files-from FILE         Process files from the given FILE instead\n"
         "                                     of the command line.\n"
         "\n"
-        "       --exclude PATTERN             Exclude files matching the pattern speci‐\n"
-        "                                     fied by PATTERN.\n"
+        "       --exclude PATTERN             Exclude files matching the pattern\n"
+        "                                     specified by PATTERN.\n"
         "\n"
+	"       --virtual-file PATH[PERMISSION,OWNER,GROUP]=PROGRAM\n"
+        "                                     Executes the given PROGRAM, using its\n"
+	"                                     output to  appear  in  the archive  as\n"
+	"                                     file name PATH.  If the size of the output\n"
+	"                                     stream of PROGRAM is larger than segment\n"
+	"                                     size, the file will appear in the archive\n"
+	"                                     as a multi-segment file\n"
     );
     return 0;
 }

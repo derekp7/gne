@@ -640,6 +640,7 @@ int catpaxvars(char **outpaxdata, int *outpaxdatalen, char *inpaxdata, int inpax
     }
     if (inpaxvarlist != NULL)
 	dfree(inpaxvarlist);
+    return(0);
 }
 
 int cmpspaxvar(char *paxdata, int paxlen, char *name, char *invalue) {
@@ -1314,7 +1315,7 @@ uint16_t *htonsp(uint16_t v)
     return(&r);
 }
 
-struct tarsplit_file *tarsplit_init_w(size_t (*c_fwrite)(), void *c_handle, char *basename_path, size_t bufsize, struct filespec *fs, int nk)
+struct tarsplit_file *tarsplit_init_w(size_t (*c_fwrite)(), void *c_handle, char *basename_path, size_t bufsize, struct filespec *fs)
 {
     struct tarsplit_file *tsf;
 
@@ -1344,7 +1345,6 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
     char seg[20];
     char padding[512];
     char paxdata[128];
-    char paxhdr_varstring[512];
 
     if (tsf->tmp_fs == NULL) {
 	tsf->tmp_fs = malloc(sizeof(struct filespec));
@@ -1372,7 +1372,8 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
 		if (tsf->segn == 0) {
 		    sprintf(paxdata, "%llu", tsf->orig_fs->filesize);
 		    setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.segmented.header", "1", 1);
-		    setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.original.size", paxdata, strlen(paxdata));
+		    catpaxvars(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), tsf->xheader, tsf->xheaderlen);
+		    tsf->xheaderlen = 0;
 		    tsf->orig_fs->ftype = '5';
 		    tsf->orig_fs->filesize = 0;
 		    tar_write_next_hdr(tsf->orig_fs);
@@ -1409,7 +1410,6 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
 	    }
 	    else {
 		sprintf(paxdata, "%llu", tsf->orig_fs->filesize);
-		setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.original.size", paxdata, strlen(paxdata));
 		catpaxvars(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), tsf->xheader, tsf->xheaderlen);
 		tsf->orig_fs->filesize = n;
 		tar_write_next_hdr(tsf->orig_fs);
@@ -1453,7 +1453,7 @@ int tarsplit_finalize_r(struct tarsplit_file *tsf)
     return(0);
 }
 
-struct tarsplit_file *tarsplit_init_r(size_t (*c_fread)(), void *c_handle, int nk)
+struct tarsplit_file *tarsplit_init_r(size_t (*c_fread)(), void *c_handle)
 {
     struct tarsplit_file *tsf;
 
@@ -1479,7 +1479,6 @@ size_t tarsplit_read(void *buf, size_t sz, size_t count, struct tarsplit_file *t
     char padding[512];
     char *paxdata = NULL;
     int paxdatalen = 0;
-    char paxhdr_varstring[32];
 
     if (tsf->tmp_fs == NULL) {
 	tsf->tmp_fs = malloc(sizeof(struct filespec));

@@ -264,8 +264,8 @@ struct hmac_file *hmac_file_init_r(size_t (*c_ffunc)(), void *c_handle, unsigned
 size_t hmac_file_read(void *buf, size_t sz, size_t count, struct hmac_file *hmacf);
 int hmac_finalize_r(struct hmac_file *hmacf, unsigned char **cfhmac, unsigned int *cfhmac_len);
 
-struct tarsplit_file *tarsplit_init_w(size_t (*c_fwrite)(), void *c_handle, char *basename_path, size_t bufsize, struct filespec *fs, int nk);
-struct tarsplit_file *tarsplit_init_r(size_t (*c_fwrite)(), void *c_handle, int nk);
+struct tarsplit_file *tarsplit_init_w(size_t (*c_fwrite)(), void *c_handle, char *basename_path, size_t bufsize, struct filespec *fs);
+struct tarsplit_file *tarsplit_init_r(size_t (*c_fwrite)(), void *c_handle);
 size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *tsf);
 size_t tarsplit_read(void *buf, size_t sz, size_t count, struct tarsplit_file *tsf);
 int tarsplit_finalize(struct tarsplit_file *tsf);
