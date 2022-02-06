@@ -112,6 +112,7 @@ struct {
     int no_cross_fs;
     int no_recursion;
     int absolute_names;
+    size_t segment_size;
     struct vf *vf;
 } args;
 int numkeys = 0;
@@ -209,6 +210,7 @@ int getargs(int argc, char **argv)
 	{ "keycomment", required_argument, NULL, 0 },
 	{ "exclude", required_argument, NULL, 0},
 	{ "virtual-file", required_argument, NULL, 0},
+	{ "segment-size", required_argument, NULL, 0},
 	{ "one-file-system", no_argument, NULL, 0},
 	{ "no-recursion", no_argument, NULL, 0},
 	{ NULL, no_argument, NULL, 0 }
@@ -227,6 +229,7 @@ int getargs(int argc, char **argv)
     args.chdir = NULL;
     args.no_recursion = 0;
     args.absolute_names = 0;
+    args.segment_size = 1024 * 1024;
     args.vf = NULL;
 
     while ((optc = getopt_long(argc, argv, "cxtvhdT:C:E:f:D:e:", longopts, &longoptidx)) >= 0) {
@@ -325,6 +328,9 @@ int getargs(int argc, char **argv)
 		}
 		if (strcmp("virtual-file", longopts[longoptidx].name) == 0) {
 		    vf_arg_process(optarg);
+		}
+		if (strcmp("segment_size", longopts[longoptidx].name) == 0) {
+		    args.segment_size = atol(optarg);
 		}
 		break;
 	    default:
@@ -763,7 +769,7 @@ int writeTarEntry(char *filename, struct stat *md, FILE *handle)
 	    setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.cipher", "rsa-aes256-ctr", 14);
 	    if (numkeys_string != NULL)
 		setpaxvar(&fs.xheader, &fs.xheaderlen, "TC.keygroup", numkeys_string, strlen(numkeys_string));
-	    tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, 1024 * 1024, &fs);
+	    tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, args.segment_size, &fs);
 	    sprintf(paxdata, "%zd", md->st_size);
 	    if (handle == NULL)
 		setpaxvar(&tsf->xheader, &tsf->xheaderlen, "TC.original.size", paxdata, strlen(paxdata));
@@ -775,7 +781,7 @@ int writeTarEntry(char *filename, struct stat *md, FILE *handle)
 	}
 	else {
 	    if (handle != NULL) {
-		tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, 1024 * 1024, &fs);
+		tsf = tarsplit_init_w(fs.io_func, fs.io_handle, fs.filename, args.segment_size, &fs);
 		fwrite_func = tarsplit_write;
 		fwrite_handle = tsf;
 	    }
@@ -1760,7 +1766,11 @@ int help()
 	"                                     file name PATH.  If the size of the output\n"
 	"                                     stream of PROGRAM is larger than segment\n"
 	"                                     size, the file will appear in the archive\n"
-	"                                     as a multi-segment file\n"
+	"                                     as a multi-segment file.\n"
+	"\n"
+	"       --segment-size NUMBER         Sets the segment size of segmented files.\n"
+	"\n"
+
     );
     return 0;
 }
