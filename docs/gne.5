@@ -1,0 +1,87 @@
+.TH GNE "5" "December 2021" "File Formats"
+.SH NAME
+\fBGne\fR \- format of gne extensions to tar
+.SH DESCRIPTION
+\fBgne\fR is a general tar compatible archiver with extensions supporting public key encryption of compressed archive members, along with other enhancements such as virtual file support.  The format follows the Unix tar layout with pax and GNU tar extensions.  Additional extensions that support gne-specific features are recorded in custom pax header variables as described below.
+
+Familiarity with the standard tar format with pax extensions is useful for understanding this document.  The man(5) page for GNU tar will give a sufficient overview, along with other online documentation (such as the Wikipedia entry on tar).  However a brief summary follows.
+
+A tar file consists of one or more archive members (individual files contained within the tar file).  Each member has a 512-byte header containing metadata (such as file name, ownership, permissions, timestamps, file type, and size of the file).  The data comprising the individual member files follows this 512 byte header, in 512-byte blocks with the last block padded with null characters if needed.  There have been numerous extensions that pack more metadata into this 512 byte header that support file names, sparse files, additional timestamps, etc.  These may vary from one vendor tar implementation to another.
+
+The POSIX pax format was introduced to allow for an arbitrary number of  additional metadata items.  This consists of a 512-byte tar header block, with the file following it containing key/value pairs describing the additional metadata.  This is then followed by a standard tar file member block (512-byte header followed by file contents).  It is in these key/value members that the gne extensions are recorded.
+
+One key item to note is that since tar is a streaming format, it requires that a member file size be known and recorded in the header block before the contents is written out.  So this is why compression (and encryption and other transformations) are typically applied outside of the tar creation process on the whole tar file, and not individual members.  This results in an output file that is not a tar file, but it is an encrypted file containing a compressed file, containing a tar file.  So you can't perform any operations on the tar file contents without decrypting and decompressing it first.
+
+If you are applying transformations (such as compression prior to encryption) to an archive member first, then recording it, then you can write the member file out to a temporary file first in order to obtain the final size.  This will require additional temporary space (which may not be available), and additional CPU and disk I/O resources increasing archive file creation time.  Another option is to perform two passes, such as what GNU tar does when recording sparse files.  Again this takes additional time.
+
+The solution that gne uses is to apply streaming compression / encryption to an archive member file and record the results into segments in the resulting tar archive.  So for example a file with the name of /somewhere/foo will be written out as /somewhere/foo/part.0001 followed by /somewhere/foo/part.0002, followed by ..., withe the first part marked as the beginning of a segmented file entry (via a custom pax key/value entry preceding the part), and the final part marked as the final segment (via another pax key/value entry).  This allows the data transformation to be performed in a streaming fashion, with results recorded in a memory block (default 1M), and the contents of that block dumped to a .../part.xxxx file when it is filled.
+.SS Global header
+A gne tar file starts with a pax global header.  This contains the public/private key information from the key file (generated with "gne -E keyfile.key").  The pax variables used are recorded with vendor prefix "TC.", as the file format is taken from the tarcrypt component of the SNEBU backup system.  They are as follows:
+.RS
+.TP
+TC.version
+Contains the file format version.
+.TP
+TC.pubkey.fingerprint
+Fingerprint of the RSA public key component.
+.TP
+TC.eprivkey
+Encrypted RSA private key from the key file.
+.TP
+TC.pubkey
+Public key from the key file.
+.TP
+TC.hmackeyhash
+SHA256 hash ofr the HMAC secret key used in the hmac signatures associated with each encrypted archive member.
+.TP
+TC.keyfile.comment
+Comment field from the key file used to encrypt the archive members.
+
+If more than one key file is used, then additional variables is specified:
+.TP
+TC.numkeys
+number of encryption keys specified.
+.TP
+TC.keygroups
+Comma delimited list of pipe-delimited key group tuples used in encrypted archive members.  Example:
+
+    TC.numkeys=3
+    TC.keygroups=0|1,0|2
+
+This specifies that 3 encryption keys are represented, and there are files that in the archive that are encrypted with keys 0 and 1, and other files encrypted with keys 0 and 2.
+.RE
+Also, when multiple encryption keys are represented, the key specification headers (TC.pubkey.fingerprint, TC.eprivkey, TC.pubkey, TC.hmackeyhash, TC.keyfile.comment) are represented once for each key, with an index number appended (i.e., "TC.eprivkey.0", "TC.eprivkey.1", etc).  Normally there would just be one keygroup, however other tools may synthesize a tar file with encrypted members from multiple sources.
+.SS Archive member headers
+Each encrypted archive member is preceded by a pax header with the following 
+.RS
+.TP
+TC.cipher
+Cipher method used.  Currently supported is rsa-aes256-ctr.
+.TP
+TC.compression
+Compression method applied prior to encryption.
+.TP
+TC.keygroup
+Used only if multiple keys are present.  Contains a pipe-delimited numeric list of keys used to encrypt this file.  When multiple keys are used, only one key is needed to decrypt the file.
+.TP
+TC.segmented.header
+Indicates a multi-part file entry follows.
+If an archive member file size isn't known ahead of time, and ends up being more than the buffer size (default 1 MiB), "TC.segmented.header" is set (with a value of "1"), and what follows a series of archive members with names in the format "file/path/part.xxxxxxxxx".  The "xxxxxxxxx" is replaced by an increasing segment number.  These file names aren't processed during decoding, however they are present in case the archive is extracted using a standard tar implementation.  In that case, upon extraction the original file will be replaced with a directory of the same name, and the contents of that directory can be combined, then decrypted manually to reconstruct the original data.
+.TP
+TC.segmented.final
+Used to indicate the last entry in a multi-part file.
+.TP
+TC.original.size
+Indicates the original size of the raw input file.
+If the input file size is not known at the beginning of encoding (such as the case when virtual files are specified), then this value appears in the pax header of the final segment.
+.RE
+.SH Encrypted data format
+
+Each encrypted archive member is encrypted with 256-bit AES in CTR mode, using a randomly generated 256-bit key.  This key is in turn encrypted by each of the specified RSA public keys from the given key file(s).  The encrypted data stream begins with a 32-bit number (4 bytes) in network byte order representing the number of encryption keys used.  This is followed by another 32-bit number with the length of the first RSA-encrypted AES key, followed by the key itself.  These are repeated for each RSA key specified.  The encrypted data stream follows the final RSA-encrypted AES key.
+.SH Rationale
+
+Typically when encryption or other transformation (such as data compression) is required on a tar file, the tar file as a whole is compressed / encrypted as a separate stage.  The resulting file can't be processed as a tar file (i.e., pulling a file listing from the archive) without first decrypting  / decompressing the contents.  This ends up being unsuitable for use with archive management tools that require access to the metadata contents, unless the metadata is conveyed separately.  These cases which involve processing of the tar file without prior decryption would require that the archive member files be individually encrypted before being placed in the tar archive, along with additional tar metadata indicating the encryption specifics.
+
+When compression is also applied prior to encrypting, then the final resulting file size isn't known until the end of the operation.  This poses a problem for tar archives, as the size of the encoded data must be known up front.  The solution that gne uses is to logical break a file up into multiple segments.  So a file path such as /foo/bar becomes /foo/bar/part.000000001, followed by /foo/bar/part.000000002, etc. with each segment limited to the size of an internal buffer (default 1 MB).  So as the file stream is being compressed and encrypted, the results start getting dumped into a buffer, and when that buffer fills it is written out as an archive member.  The first segment is labeled as the beginning of a segmented file series, and the last segment is identified as such through extended pax header entries which allows the segments to be recombined into the original file upon extraction.  This technique also enables the use of having tar member file data to be generated on the fly by an external process, such as performing a database dump (using the --virtual-file flag).
+
+If a multiple-segment entry is extracted using a standard tar utility, the individual segments appear as above, and can be recombined manually after extraction.  Further, the passphrase-protected (encrypted) RSA private key can be manually extracted from the global header and used with the openssl command line tool to decrypt then entry.
