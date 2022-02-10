@@ -71,7 +71,7 @@ void vf_arg_process(char *optarg);
 void create_tar_vf();
 void *usage();
 int mkdir_p(char *pathname, int mode);
-void print_longtoc_entry(struct filespec *fs, size_t realsize);
+void print_longtoc_entry(struct filespec *fs, size_t realsize, char *filename);
 char *strunesc(char *src, char **target);
 long int strtoln(char *nptr, char **endptr, int base, int len);
 int help();
@@ -936,6 +936,7 @@ int extracttar(int argc, char **argv)
     char *filenamec = NULL;
     char *sanitized_filename = NULL;
     char *sanitized_linktarget = NULL;
+    char filename[8192];
 
     fsinit(&fs);
     memset(padblock, 0, 512);
@@ -960,14 +961,22 @@ int extracttar(int argc, char **argv)
 	int has_segmented_header = 1;
 
 	if (fs.ftype != 'g') {
-	    sanitized_filename = sanitize_filename(fs.filename);
+	    if (getpaxvar(fs.xheader, fs.xheaderlen, "TC.original.filename", &paxdata, &paxdatalen) == 0) {
+		strncpy(filename, paxdata, (paxdatalen - 1) > 8191 ? 8191 : (paxdatalen - 1));
+		filename[(paxdatalen - 1) > 8191 ? 8191 : (paxdatalen - 1)] = '\0';
+	    }
+	    else {
+		strncpy(filename, fs.filename, 8191);
+		filename[8191] = '\0';
+	    }
+	    sanitized_filename = sanitize_filename(filename);
 	    sanitized_linktarget = sanitize_filename(fs.linktarget);
 	    if (argc > 0)
 		extract_this_file = 0;
 	    else
 		extract_this_file = 1;
 	    for (int i = 0; i < argc; i++) {
-		if (strcmp(fs.filename, argv[i]) == 0 || (strncmp(argv[i], fs.filename, strlen(argv[i])) == 0 && fs.filename[strlen(argv[i])] == '/'))
+		if (strcmp(filename, argv[i]) == 0 || (strncmp(argv[i], filename, strlen(argv[i])) == 0 && filename[strlen(argv[i])] == '/'))
 		    extract_this_file = 1;
 	    }
 	}
@@ -1179,10 +1188,10 @@ int extracttar(int argc, char **argv)
 
 	    if (args.verbose == 1 && extract_this_file == 1) {
 		if (sizeremaining != 0)
-		    print_longtoc_entry(&fs, sizeremaining);
+		    print_longtoc_entry(&fs, sizeremaining, filename);
 	    }
 	    else if (extract_this_file == 1 && args.action == LIST)
-		printf("%s\n", fs.filename);
+		printf("%s\n", filename);
 
 	    if (*cached_uname == 0 || strcmp(cached_uname, fs.auid) != 0) {
 		strncpy(cached_uname, fs.auid, 63);
@@ -1341,14 +1350,14 @@ int extracttar(int argc, char **argv)
 	    }
 
 	    if (differed_original_size == 1)
-		print_longtoc_entry(&fs, original_size);
+		print_longtoc_entry(&fs, original_size, filename);
 
 	}
 	else if (fs.ftype == '5') {
             if (args.verbose == 1 && extract_this_file == 1)
-                print_longtoc_entry(&fs, sizeremaining);
+                print_longtoc_entry(&fs, sizeremaining, filename);
 	    else if (extract_this_file == 1 && args.action == LIST)
-		printf("%s\n", fs.filename);
+		printf("%s\n", filename);
 	    if (args.action == EXTRACT) {
 		if (mkdir_p(sanitized_filename, 0777) == 0) {
 		    if (*cached_uname == 0 || strcmp(cached_uname, fs.auid) != 0) {
@@ -1393,9 +1402,9 @@ int extracttar(int argc, char **argv)
 	}
 	else if (fs.ftype == '1') {
             if (args.verbose == 1 && extract_this_file == 1)
-                print_longtoc_entry(&fs, sizeremaining);
+                print_longtoc_entry(&fs, sizeremaining, filename);
 	    else if (extract_this_file == 1 && args.action == LIST)
-		printf("%s\n", fs.filename);
+		printf("%s\n", filename);
 	    if (args.action == EXTRACT) {
 		if (lstat(sanitized_filename, &sb) == 0) {
 		    if (lstat(sanitize_filename(sanitized_linktarget), &sb2) == 0) {
@@ -1423,9 +1432,9 @@ int extracttar(int argc, char **argv)
 	}
 	else if (fs.ftype == '2') {
             if (args.verbose == 1 && extract_this_file == 1)
-                print_longtoc_entry(&fs, sizeremaining);
+                print_longtoc_entry(&fs, sizeremaining, filename);
 	    else if (extract_this_file == 1 && args.action == LIST)
-		printf("%s\n", fs.filename);
+		printf("%s\n", filename);
 	    if (args.action == EXTRACT) {
 		if (lstat(sanitized_filename, &sb) == 0) {
 		    if (unlink(sanitized_filename) == 0) {
@@ -1641,7 +1650,7 @@ int dirperms_cmp(const void *p1, const void *p2)
 {
     return strcmp((*(struct dirperms **) p1)->filename, (*(struct dirperms **) p2)->filename);
 }
-void print_longtoc_entry(struct filespec *fs, size_t realsize)
+void print_longtoc_entry(struct filespec *fs, size_t realsize, char *filename)
 {
 	    if (args.verbose == 1) {
 		char modstr[11] = "?rwxrwxrwx";
@@ -1661,9 +1670,9 @@ void print_longtoc_entry(struct filespec *fs, size_t realsize)
 		filetime = localtime(&(fs->modtime));
 		strftime(filetimebuf, 64, "%Y-%m-%d %H:%M", filetime);
 		if (fs->ftype == '1' || fs->ftype == '2')
-		    fprintf(stderr, "%s %s/%s %5lu %s %s %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename, fs->ftype == '1' ? "link to" : fs->ftype == '2' ? "->" : "", fs->linktarget);
+		    fprintf(stderr, "%s %s/%s %5lu %s %s %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, filename, fs->ftype == '1' ? "link to" : fs->ftype == '2' ? "->" : "", fs->linktarget);
 		else 
-		    fprintf(stderr, "%s %s/%s %5lu %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, fs->filename);
+		    fprintf(stderr, "%s %s/%s %5lu %s %s\n", modstr, fs->auid, fs->agid, realsize, filetimebuf, filename);
 	    }
 }
 

@@ -1372,10 +1372,14 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
 		if (tsf->segn == 0) {
 		    sprintf(paxdata, "%llu", tsf->orig_fs->filesize);
 		    setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.segmented.header", "1", 1);
+		    setpaxvar(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), "TC.original.filename", tsf->orig_fs->filename, strlen(tsf->orig_fs->filename));
 		    catpaxvars(&(tsf->orig_fs->xheader), &(tsf->orig_fs->xheaderlen), tsf->xheader, tsf->xheaderlen);
 		    tsf->xheaderlen = 0;
-		    tsf->orig_fs->ftype = '5';
+//		    tsf->orig_fs->ftype = '5';
 		    tsf->orig_fs->filesize = 0;
+		    sprintf(seg, "%9.9d", (tsf->segn)++);
+		    strcata(&tsf->orig_fs->filename, "/part.");
+		    strcata(&tsf->orig_fs->filename, seg);
 		    tar_write_next_hdr(tsf->orig_fs);
 
 		}
@@ -1385,6 +1389,7 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
 		strcata(&(fs->filename), seg);
 		fs->filesize = tsf->bufsize;
 		fs->ftype = '0';
+		fs->mode = tsf->orig_fs->mode;
 		tar_write_next_hdr(fs);
 		tsf->c_fwrite(tsf->buf, 1, tsf->bufsize, tsf->c_handle);
 		tsf->c_fwrite(padding, 1, 512 - ((tsf->bufsize - 1) % 512 + 1),
@@ -1403,6 +1408,7 @@ size_t tarsplit_write(void *buf, size_t sz, size_t count, struct tarsplit_file *
 		strcata(&(fs->filename), seg);
 		fs->filesize = n;
 		fs->ftype = '0';
+		fs->mode = tsf->orig_fs->mode;
 		setpaxvar(&(fs->xheader), &(fs->xheaderlen), "TC.segmented.final", "1", 1);
 		catpaxvars(&(fs->xheader), &(fs->xheaderlen), tsf->xheader, tsf->xheaderlen);
 		tar_write_next_hdr(fs);
@@ -1650,8 +1656,8 @@ int genkey(int argc, char **argv)
 struct rsa_file *rsa_file_init(char mode, EVP_PKEY **evp_keypair, int nk, size_t (*c_ffunc)(), void *c_handle)
 {
     struct rsa_file *rcf;
-    int eklen_n;
-    int nk_n;
+    int32_t eklen_n;
+    int32_t nk_n;
 
 
     rcf = malloc(sizeof(struct rsa_file));
